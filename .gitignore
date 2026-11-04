@@ -1,0 +1,37 @@
+# Python & Entornos
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env
+
+# Builds y empaquetado de Windows (Inno Setup, NSIS, PyInstaller)
+build/
+dist/
+*.spec
+Output/
+*.exe
+*.msi
+
+# Credenciales y sesiones privadas
+config/sessions/
+config/stock_credentials.json
+*.json.bak
+
+# Archivos pesados y multimedia
+*.mp4
+*.mp3
+*.wav
+*.jpg
+*.jpeg
+*.png
+pipeline_runs/
+storage/
+
+# IDEs
+.vscode/
+.idea/
+.gemini/
+.system_generated/
