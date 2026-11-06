@@ -159,19 +159,19 @@ function renderUpdaterBar(u) {
     dot.classList.add("update");
     txt.textContent = `Nueva versión v${u.latest_version} (${u.asset_size_mb} MB)`;
     cta.style.display = "inline-flex";
-    cta.textContent = `Actualizar a v${u.latest_version} en 1 clic`;
+    cta.textContent = `Actualizar a v${u.latest_version}`;
     cta.disabled = false;
   } else if (u.status === "downloading") {
     dot.classList.add("update");
-    txt.textContent = `Descargando: ${u.progress_percent}% (${u.speed_mbps} MB/s)`;
+    txt.textContent = `Descargando actualización: ${u.progress_percent}% (${u.speed_mbps} MB/s)`;
     cta.style.display = "inline-flex";
     cta.textContent = `${u.progress_percent}%`;
     cta.disabled = true;
   } else if (u.status === "ready_to_install") {
     dot.classList.add("update");
-    txt.textContent = `Actualización lista`;
+    txt.textContent = `Actualización lista para instalar`;
     cta.style.display = "inline-flex";
-    cta.textContent = `Instalar y reiniciar ahora`;
+    cta.textContent = `Reiniciar y actualizar`;
     cta.disabled = false;
   } else if (u.status === "error") {
     dot.classList.add("error");

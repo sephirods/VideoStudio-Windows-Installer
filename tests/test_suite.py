@@ -280,7 +280,7 @@ class VideoStudioWindowsTestSuite(unittest.TestCase):
             r = client.get("/api/bootstrap")
             self.assertEqual(r.status_code, 200)
             boot = r.json()
-            self.assertEqual(boot["version"]["version"], "1.0.5")
+            self.assertEqual(boot["version"]["version"], "1.0.6")
             self.assertEqual(len(boot["voices"]), 8)
 
             # Save channel via Wizard endpoint

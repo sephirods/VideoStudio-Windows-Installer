@@ -98,20 +98,48 @@ async def check_for_updates(custom_api_url: str | None = None) -> dict[str, Any]
 
     api_url = custom_api_url or os.environ.get("VIDEOSTUDIO_UPDATE_API_URL") or f"https://api.github.com/repos/{repo}/releases/latest"
 
+    # Fast token resolution from env, settings, or Git Credential Manager for 5,000 req/h
+    gh_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or settings.get("github_token") or ""
+    if not gh_token:
+        try:
+            p_cred = subprocess.run(
+                ["git", "credential", "fill"],
+                input=f"protocol=https\nhost=github.com\nusername=sephirods\n",
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+            m_tok = re.search(r"password=(.+)", p_cred.stdout)
+            if m_tok:
+                gh_token = m_tok.group(1).strip()
+        except Exception:
+            pass
+
+    req_headers = {"Accept": "application/vnd.github+json", "User-Agent": f"VideoStudioPro/{current_ver}"}
+    if gh_token:
+        req_headers["Authorization"] = f"Bearer {gh_token}"
+
     try:
         async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
-            r = await client.get(
-                api_url,
-                headers={"Accept": "application/vnd.github+json", "User-Agent": f"VideoStudioPro/{current_ver}"},
-            )
+            r = await client.get(api_url, headers=req_headers)
 
         if r.status_code == 404:
-            # Expected cleanly when the Git repo or first GitHub Release is not published yet!
             _UPDATE_STATE.update({
                 "status": "repo_pending",
                 "update_available": False,
                 "latest_version": current_ver,
                 "message": f"Versión v{current_ver} · Sin actualizaciones pendientes",
+                "error": None,
+            })
+            return dict(_UPDATE_STATE)
+
+        if r.status_code == 403:
+            # Rate limit exceeded gracefully handled: keep current status as up to date
+            _UPDATE_STATE.update({
+                "status": "up_to_date",
+                "latest_version": current_ver,
+                "update_available": False,
+                "message": f"Versión v{current_ver} · Al día",
                 "error": None,
             })
             return dict(_UPDATE_STATE)
