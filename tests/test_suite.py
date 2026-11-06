@@ -318,6 +318,14 @@ class VideoStudioWindowsTestSuite(unittest.TestCase):
             self.assertFalse(pub_root.exists())
             self.assertEqual(bad_del.status_code, 400)
 
+            # Cooldown unblock & orphan purge endpoint
+            cdel = client.delete("/api/gallery/cooldown?topic=nonexistent_topic")
+            self.assertEqual(cdel.status_code, 200)
+            self.assertTrue(cdel.json()["ok"])
+            cpurge = client.delete("/api/gallery/cooldown?all_orphans=true")
+            self.assertEqual(cpurge.status_code, 200)
+            self.assertTrue(cpurge.json()["ok"])
+
             # Niche suggestions endpoint
             nr = client.post("/api/ai/suggest-niches", json={"language": "en", "purpose": "monetization"})
             self.assertEqual(nr.status_code, 200)

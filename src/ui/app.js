@@ -1431,7 +1431,7 @@ window.approveCopilotPhoto = async function (idx) {
 };
 
 /* ==================== GALLERY & 30-DAY PROTECTION ==================== */
-function populateGalleryChannelFilter(vids) {
+function populateGalleryChannelFilter(vids, cools) {
   const filterSel = document.getElementById("galleryChannelFilter");
   if (!filterSel) return;
   const currentVal = filterSel.value;
@@ -1439,6 +1439,20 @@ function populateGalleryChannelFilter(vids) {
   vids.forEach((v) => {
     const ch = v.channel || "⚡ Modo libre / Piloto";
     counts[ch] = (counts[ch] || 0) + 1;
+  });
+
+  // Also include channels that exist in cooldown or channels config even if 0 videos
+  (cools || []).forEach((c) => {
+    const ch = c.channel || c.group || "⚡ Modo libre / Piloto";
+    if (counts[ch] === undefined) {
+      counts[ch] = 0;
+    }
+  });
+  (state.bootstrap?.channels || []).forEach((c) => {
+    const ch = c.name || c.id;
+    if (counts[ch] === undefined) {
+      counts[ch] = 0;
+    }
   });
 
   let html = `<option value="">📺 Todos los canales (${vids.length})</option>`;
@@ -1456,19 +1470,21 @@ function renderFilteredGallery() {
   const filterSel = document.getElementById("galleryChannelFilter");
   const selectedChannel = filterSel ? filterSel.value : "";
   const allVids = window._galleryVideos || [];
+  const allCools = window._galleryCooldown || [];
 
-  const filtered = selectedChannel
+  // 1. Filter videos grid
+  const filteredVids = selectedChannel
     ? allVids.filter((v) => (v.channel || "⚡ Modo libre / Piloto") === selectedChannel)
     : allVids;
 
-  if (!filtered.length) {
+  if (!filteredVids.length) {
     vGrid.innerHTML = `
       <div class="card" style="grid-column:1/-1; color:var(--text-muted); text-align:center; padding:26px;">
         ${allVids.length ? `No hay videos terminados para el canal "<strong>${esc(selectedChannel)}</strong>".` : `Todavía no tienes videos terminados en tu biblioteca. Ve a <strong>Crear Videos</strong> para producir el primero.`}
       </div>
     `;
   } else {
-    vGrid.innerHTML = filtered.map((v) => {
+    vGrid.innerHTML = filteredVids.map((v) => {
       const origIdx = allVids.indexOf(v);
       return `
       <div class="card" style="margin:0;">
@@ -1488,6 +1504,31 @@ function renderFilteredGallery() {
     `;
     }).join("");
   }
+
+  // 2. Filter 30-day cooldown table with the exact same channel filter!
+  const cBody = document.getElementById("cooldownTableBody");
+  if (cBody) {
+    const filteredCools = selectedChannel
+      ? allCools.filter((c) => {
+          const ch = c.channel || c.group || "";
+          return ch === selectedChannel || (selectedChannel === "⚡ Modo libre / Piloto" && (!ch || ch === "piloto_demo"));
+        })
+      : allCools;
+
+    cBody.innerHTML = filteredCools.length
+      ? filteredCools.map((c) => `
+          <tr>
+            <td><strong>${esc(c.group || c.channel || "—")}</strong></td>
+            <td>${esc(c.channel || c.group || "—")}</td>
+            <td>${esc(c.topic)}</td>
+            <td><span class="badge badge-paid">Protegido por ${c.days_remaining} días más</span></td>
+            <td style="text-align:right;">
+              <button class="btn btn-sm" style="padding:2px 8px; font-size:11px; color:#f87171; border-color:rgba(239,68,68,0.3); background:rgba(239,68,68,0.06);" onclick="unblockTopic('${esc(c.topic.replace(/'/g, "\\'"))}')" title="Desbloquear este tema para volver a usarlo">✕ Liberar</button>
+            </td>
+          </tr>
+        `).join("")
+      : `<tr><td colspan="5" style="color:var(--text-dim); text-align:center; padding:18px;">${selectedChannel ? `No hay temas protegidos para el canal "<strong>${esc(selectedChannel)}</strong>".` : "Aún no hay temas registrados en el historial de los últimos 30 días."}</td></tr>`;
+  }
 }
 
 async function refreshGallery() {
@@ -1495,22 +1536,39 @@ async function refreshGallery() {
   renderCacheBar(res.cache);
 
   window._galleryVideos = res.videos || [];
-  populateGalleryChannelFilter(window._galleryVideos);
+  window._galleryCooldown = res.cooldown_active || [];
+  populateGalleryChannelFilter(window._galleryVideos, window._galleryCooldown);
   renderFilteredGallery();
-
-  const cBody = document.getElementById("cooldownTableBody");
-  const cools = res.cooldown_active || [];
-  cBody.innerHTML = cools.length
-    ? cools.map((c) => `
-        <tr>
-          <td><strong>${esc(c.group)}</strong></td>
-          <td>${esc(c.channel)}</td>
-          <td>${esc(c.topic)}</td>
-          <td><span class="badge badge-paid">Protegido por ${c.days_remaining} días más</span></td>
-        </tr>
-      `).join("")
-    : `<tr><td colspan="4" style="color:var(--text-dim);">Aún no hay temas registrados en el historial de los últimos 30 días.</td></tr>`;
 }
+
+window.unblockTopic = async function (topic) {
+  if (!confirm(`¿Deseas desbloquear el tema "${topic}" de la protección de 30 días?`)) return;
+  try {
+    const res = await api(`/api/gallery/cooldown?topic=${encodeURIComponent(topic)}`, "DELETE");
+    if (res.ok) {
+      toast(`Tema "${topic}" desbloqueado correctamente.`);
+      await refreshGallery();
+    } else {
+      toast("No se pudo desbloquear el tema.");
+    }
+  } catch (err) {
+    toast(`Error al desbloquear: ${err.message || err}`);
+  }
+};
+
+window.purgeOrphanCooldowns = async function () {
+  try {
+    const res = await api("/api/gallery/cooldown?all_orphans=true", "DELETE");
+    if (res.ok) {
+      toast(`Se liberaron ${res.removed} temas huérfanos.`);
+      await refreshGallery();
+    } else {
+      toast("No se pudieron purgar los temas huérfanos.");
+    }
+  } catch (err) {
+    toast(`Error: ${err.message || err}`);
+  }
+};
 
 window.copyPack = function (idx) {
   const v = (window._galleryVideos || [])[idx];

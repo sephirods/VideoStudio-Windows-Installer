@@ -268,7 +268,10 @@
         <div id="galleryVideosGrid" class="grid-3"></div>
 
         <div class="card" style="margin-top:18px;">
-          <h3 class="card-heading">🛡️ Protección anti-repetición de 30 días</h3>
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:6px;">
+            <h3 class="card-heading" style="margin:0;">🛡️ Protección anti-repetición de 30 días</h3>
+            <button class="btn btn-sm" onclick="purgeOrphanCooldowns()" title="Elimina del historial los temas de videos que ya no existen en tu PC">🧹 Purgar temas de videos borrados</button>
+          </div>
           <p style="font-size:12.5px; color:var(--text-muted); margin-bottom:10px;">
             Los temas e imágenes principales usados recientemente quedan bloqueados durante 30 días en el mismo grupo de canales.
           </p>
@@ -279,6 +282,7 @@
                 <th>Canal</th>
                 <th>Tema ya publicado</th>
                 <th>Tiempo de protección</th>
+                <th style="text-align:right;">Acción</th>
               </tr>
             </thead>
             <tbody id="cooldownTableBody"></tbody>

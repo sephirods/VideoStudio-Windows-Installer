@@ -531,13 +531,33 @@ async def api_gallery() -> dict[str, Any]:
                 "duration_sec": dur,
             })
 
-    # Load 30-day cooldown items
+    # Load 30-day cooldown items & auto-reconcile orphaned entries whose video folder was deleted
     hist_file = ws / "config" / "history" / "publication_history.json"
     cooldown_items: list[dict[str, Any]] = []
     now = datetime.now()
     if hist_file.exists():
         try:
             raw_hist = json.loads(hist_file.read_text(encoding="utf-8"))
+            reconciled_hist: list[dict[str, Any]] = []
+            hist_changed = False
+            for entry in raw_hist:
+                v_path = entry.get("video_path")
+                # Auto-reconcile: if entry points to a deleted folder, purge orphan
+                if v_path:
+                    vp = Path(v_path)
+                    v_folder = vp.parent if vp.suffix else vp
+                    if not v_folder.exists():
+                        hist_changed = True
+                        continue
+                reconciled_hist.append(entry)
+
+            if hist_changed:
+                try:
+                    hist_file.write_text(json.dumps(reconciled_hist, indent=2, ensure_ascii=False), encoding="utf-8")
+                except Exception:
+                    pass
+                raw_hist = reconciled_hist
+
             for entry in reversed(raw_hist):
                 ts_str = entry.get("published_at") or entry.get("timestamp") or ""
                 days_left = 30
@@ -549,7 +569,7 @@ async def api_gallery() -> dict[str, Any]:
                     pass
                 if days_left > 0:
                     cooldown_items.append({
-                        "channel": entry.get("channel_id", ""),
+                        "channel": entry.get("channel") or entry.get("channel_id", ""),
                         "group": entry.get("group", ""),
                         "topic": entry.get("topic", ""),
                         "image_dhash": entry.get("image_hash", ""),
@@ -559,6 +579,38 @@ async def api_gallery() -> dict[str, Any]:
             pass
 
     return {"videos": items, "cooldown_active": cooldown_items[:40], "cache": get_cache_health()}
+
+
+@app.delete("/api/gallery/cooldown")
+async def api_delete_gallery_cooldown(topic: str = Query(None), all_orphans: bool = Query(False)) -> dict[str, Any]:
+    ws = get_workspace_dir()
+    hist_file = ws / "config" / "history" / "publication_history.json"
+    if not hist_file.exists():
+        return {"ok": True, "removed": 0, "remaining": 0}
+    try:
+        raw_hist = json.loads(hist_file.read_text(encoding="utf-8"))
+    except Exception:
+        raw_hist = []
+
+    initial_count = len(raw_hist)
+    if all_orphans:
+        survivors: list[dict[str, Any]] = []
+        for entry in raw_hist:
+            v_path = entry.get("video_path")
+            if v_path:
+                vp = Path(v_path)
+                v_folder = vp.parent if vp.suffix else vp
+                if not v_folder.exists():
+                    continue
+            survivors.append(entry)
+        raw_hist = survivors
+    elif topic:
+        t_clean = topic.strip().lower()
+        raw_hist = [h for h in raw_hist if str(h.get("topic", "")).strip().lower() != t_clean]
+
+    removed = initial_count - len(raw_hist)
+    hist_file.write_text(json.dumps(raw_hist, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {"ok": True, "removed": removed, "remaining": len(raw_hist)}
 
 
 @app.delete("/api/gallery")
