@@ -1,9 +1,10 @@
-/* VideoStudio Pro — Modern Reactive Desktop Controller */
+/* VideoStudio Pro — End-User Native Desktop Controller */
 const state = {
   bootstrap: null,
   scan: null,
   recommendations: null,
   activeProfile: "balanced",
+  productionMode: "auto",
   stageOverrides: {},
   wizardStep: 1,
   selectedVoice: "es-MX-JorgeNeural",
@@ -11,15 +12,15 @@ const state = {
   pipelineTimer: null,
   updaterTimer: null,
   defaultStages: [
-    { id: "trend-researcher", name: "1. Trend Researcher", role: "Tendencias + Cooldown 30d" },
-    { id: "viral-scriptwriter", name: "2. Viral Scriptwriter", role: "Guión 5 Compases (62-72s)" },
-    { id: "viral-copywriter", name: "3. Viral Copywriter", role: "Rama Paralela SEO & CTR" },
-    { id: "visual-asset-reviewer", name: "4. Visual Asset Reviewer", role: "Rama Paralela Grid 2x2 + Visión" },
-    { id: "video-renderer", name: "5. Video Renderer (GPU)", role: "FFmpeg Directo NVENC ~20s" },
-    { id: "video-qa-validator", name: "6. Video QA Validator", role: "Tira QA 5 Fotogramas + Visión" },
-    { id: "thumbnail-designer", name: "7. Thumbnail Designer", role: "Foto Real + Badge 74px" },
-    { id: "packaging-archiver", name: "8. Packaging Archiver", role: "Historial 30d + LRU 1.5 GB" },
-    { id: "social-media-publisher", name: "9. Social Publisher", role: "Sesiones Multi-Red Aisladas" },
+    { id: "trend-researcher", name: "1. Tendencias", role: "Busca un tema viral sin repetir en 30 días" },
+    { id: "viral-scriptwriter", name: "2. Guión Viral", role: "Escribe la historia en 5 partes (62 a 72 s)" },
+    { id: "viral-copywriter", name: "3. Título y Descripción", role: "Prepara título atractivo, etiquetas y debate" },
+    { id: "visual-asset-reviewer", name: "4. Selección Visual", role: "Elige foto real inicial y escenas verticales" },
+    { id: "video-renderer", name: "5. Montaje y Renderizado", role: "Une narración, música y subtítulos por GPU" },
+    { id: "video-qa-validator", name: "6. Control de Calidad", role: "Revisa duración exacta y encuadre móvil" },
+    { id: "thumbnail-designer", name: "7. Portada Viral", role: "Crea la miniatura con titular de alto impacto" },
+    { id: "packaging-archiver", name: "8. Archivo y Protección", role: "Guarda el paquete y protege el tema 30 días" },
+    { id: "social-media-publisher", name: "9. Publicación", role: "Sube a tus redes o deja listo en tu PC" },
   ],
 };
 
@@ -32,7 +33,7 @@ async function api(path, method = "GET", body = null) {
   const res = await fetch(path, opts);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+    throw new Error(data.detail || data.error || `Error inesperado (${res.status})`);
   }
   return data;
 }
@@ -42,7 +43,7 @@ function toast(msg) {
   el.textContent = msg;
   el.classList.add("show");
   clearTimeout(window._toastTimeout);
-  window._toastTimeout = setTimeout(() => el.classList.remove("show"), 3600);
+  window._toastTimeout = setTimeout(() => el.classList.remove("show"), 3800);
 }
 
 function mediaUrl(absPath) {
@@ -55,6 +56,19 @@ function esc(str) {
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
   ));
 }
+
+window.openExternalUrl = function (url) {
+  if (!url) return;
+  api("/api/system/open-url", "POST", { target: url }).catch(() => {});
+};
+
+window.togglePasswordField = function (inputId, btnEl) {
+  const inp = document.getElementById(inputId);
+  if (!inp) return;
+  const isPass = inp.type === "password";
+  inp.type = isPass ? "text" : "password";
+  btnEl.textContent = isPass ? "Ocultar" : "Ver";
+};
 
 /* ==================== INITIALIZATION ==================== */
 async function initApp() {
@@ -74,19 +88,21 @@ async function refreshBootstrap() {
   const data = await api("/api/bootstrap");
   state.bootstrap = data;
   state.activeProfile = data.settings.model_profile || "balanced";
+  state.productionMode = data.settings.production_mode || "auto";
   state.stageOverrides = data.settings.stage_models || {};
 
-  // Top bar version & GPU
   document.getElementById("topVersionBadge").textContent = `v${data.version.version}`;
   const hw = data.hardware || {};
   const gpuBadge = document.getElementById("gpuTopBadge");
   if (hw.video_encoder === "h264_nvenc") {
-    gpuBadge.textContent = `⚡ ${hw.gpu_name.replace("NVIDIA GeForce ", "")} · NVENC`;
+    gpuBadge.textContent = `⚡ ${hw.gpu_name.replace("NVIDIA GeForce ", "")} Activa`;
+  } else if (hw.video_encoder === "h264_amf") {
+    gpuBadge.textContent = `⚡ ${hw.gpu_name}`;
   } else {
-    gpuBadge.textContent = `⚙️ ${hw.video_encoder || "CPU"} · ${hw.cpu_cores || 4} Cores`;
+    gpuBadge.textContent = `Procesador (${hw.cpu_cores || 4} núcleos)`;
   }
 
-  document.getElementById("prodModeSelect").value = data.settings.production_mode || "auto";
+  syncProdModeUI(state.productionMode);
   document.getElementById("settingsGithubRepo").value = data.settings.github_repo || data.version.github_repo || "";
 
   renderCacheBar(data.cache);
@@ -117,7 +133,7 @@ function bindNavigation() {
   document.getElementById("btnQuickPurge").addEventListener("click", async () => {
     const res = await api("/api/storage/purge?full=true", "POST");
     renderCacheBar(res.updated_health);
-    toast(`Caché limpiada: ${res.freed_mb} MB liberados.`);
+    toast(`Archivos temporales liberados (${res.freed_mb} MB).`);
   });
 }
 
@@ -139,42 +155,43 @@ function renderUpdaterBar(u) {
 
   if (u.status === "update_available") {
     dot.classList.add("update");
-    txt.textContent = `Nueva v${u.latest_version} (${u.asset_size_mb} MB)`;
+    txt.textContent = `Nueva versión v${u.latest_version} (${u.asset_size_mb} MB)`;
     cta.style.display = "inline-flex";
-    cta.textContent = `🚀 Actualizar a v${u.latest_version} en 1 Clic`;
+    cta.textContent = `Actualizar a v${u.latest_version} en 1 clic`;
     cta.disabled = false;
   } else if (u.status === "downloading") {
     dot.classList.add("update");
-    txt.textContent = `Descargando actualización: ${u.progress_percent}% (${u.speed_mbps} MB/s)`;
+    txt.textContent = `Descargando: ${u.progress_percent}% (${u.speed_mbps} MB/s)`;
     cta.style.display = "inline-flex";
-    cta.textContent = `⏳ ${u.progress_percent}%`;
+    cta.textContent = `${u.progress_percent}%`;
     cta.disabled = true;
   } else if (u.status === "ready_to_install") {
     dot.classList.add("update");
-    txt.textContent = `Actualización verificada lista`;
+    txt.textContent = `Actualización lista`;
     cta.style.display = "inline-flex";
-    cta.textContent = `⚡ Instalar y Reiniciar Ahora`;
+    cta.textContent = `Instalar y reiniciar ahora`;
     cta.disabled = false;
-  } else if (u.status === "repo_pending") {
-    dot.classList.add("pending");
-    txt.textContent = u.message || `v${u.current_version} · Repo Git pendiente`;
+  } else if (u.status === "error") {
+    dot.classList.add("error");
+    txt.textContent = u.message || `Versión v${u.current_version}`;
   } else {
-    txt.textContent = u.message || `v${u.current_version} · Actualizado`;
+    dot.classList.add("pending");
+    txt.textContent = u.message || `Versión v${u.current_version} · Al día`;
   }
 }
 
 function bindSettingsAndUpdater() {
   document.getElementById("btnCheckUpdates").addEventListener("click", async () => {
-    document.getElementById("updaterText").textContent = "Buscando en GitHub...";
+    document.getElementById("updaterText").textContent = "Comprobando...";
     const u = await api("/api/updater/check", "POST");
     renderUpdaterBar(u);
-    toast(u.message || "Comprobación completada.");
+    toast(u.message || "Versión comprobada.");
   });
 
   document.getElementById("btnOneClickUpdate").addEventListener("click", async () => {
     const cur = await api("/api/updater/status");
     if (cur.status === "ready_to_install") {
-      toast("Lanzando instalador de actualización...");
+      toast("Abriendo instalador de la nueva versión...");
       await api("/api/updater/install", "POST");
       return;
     }
@@ -185,11 +202,11 @@ function bindSettingsAndUpdater() {
       renderUpdaterBar(st);
       if (st.status === "ready_to_install") {
         clearInterval(state.updaterTimer);
-        toast("¡Descarga verificada! Iniciando instalación automática...");
+        toast("Descarga verificada. Actualizando aplicación...");
         await api("/api/updater/install", "POST");
       } else if (st.status === "error") {
         clearInterval(state.updaterTimer);
-        toast(st.error || "Error en descarga.");
+        toast(st.error || "No se pudo completar la descarga.");
       }
     }, 650);
   });
@@ -199,18 +216,18 @@ function bindSettingsAndUpdater() {
     await api("/api/settings", "POST", { github_repo: repo });
     const u = await api("/api/updater/check", "POST");
     renderUpdaterBar(u);
-    toast("Repositorio Git guardado y verificado.");
+    toast("Repositorio guardado correctamente.");
   });
 
   document.getElementById("btnSaveStockSettings").addEventListener("click", async () => {
     const pix = document.getElementById("settingsPixabayKey").value.trim();
     const pex = document.getElementById("settingsPexelsKey").value.trim();
     const res = await api("/api/stock/save", "POST", { pixabay_key: pix, pexels_key: pex });
-    toast(res.validation.pixabay.message || res.validation.pexels.message || "Configuración de Stock guardada.");
+    toast(res.validation.pixabay.message || res.validation.pexels.message || "Claves de escenas guardadas.");
   });
 
   document.getElementById("btnGetPixabayKey").addEventListener("click", () => {
-    api("/api/system/open-url", "POST", { target: "https://pixabay.com/api/docs/" });
+    openExternalUrl("https://pixabay.com/api/docs/");
   });
 }
 
@@ -222,28 +239,49 @@ function renderProvidersCards(providersMap) {
     if (!el) return;
     el.innerHTML = entries.map((p) => {
       const scanInfo = state.scan?.providers?.[p.id] || {};
-      const connectedBadge = scanInfo.connected
-        ? `<span class="badge badge-free">✅ Activo (${scanInfo.free_count || 0} Gratis / ${scanInfo.paid_count || 0} Pagos)</span>`
-        : `<span class="badge" style="background:rgba(255,255,255,0.06); color:var(--text-muted);">${p.has_api_key ? "Listo" : "Sin clave"}</span>`;
+      let statusBadge = "";
+      if (scanInfo.connected) {
+        statusBadge = `<span class="badge badge-free">Conectado · ${scanInfo.free_count || 0} Gratis / ${scanInfo.paid_count || 0} Pago</span>`;
+      } else if (p.id === "local") {
+        statusBadge = `<span class="badge badge-neutral">Opcional en tu PC</span>`;
+      } else if (p.has_api_key) {
+        statusBadge = `<span class="badge badge-paid">Clave guardada</span>`;
+      } else {
+        statusBadge = `<span class="badge badge-neutral">Sin conectar</span>`;
+      }
+
       const showUrl = p.id === "omnirouter" || p.id === "local";
+      const inputId = `${containerId}_key_${p.id}`;
+      const helperLink = p.key_url
+        ? `<button type="button" class="link-btn" onclick="openExternalUrl('${esc(p.key_url)}')">${esc(p.key_cta || "Obtener clave ↗")}</button>`
+        : "";
+
       return `
-        <div class="card" style="margin-bottom:0; padding:${compact ? "12px" : "15px"};">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-            <strong>${esc(p.label)}</strong>
-            ${connectedBadge}
+        <div class="provider-card" style="padding:${compact ? "12px 14px" : "15px 16px"};">
+          <div>
+            <div class="provider-head">
+              <strong style="font-size:14px;">${esc(p.label)}</strong>
+              ${statusBadge}
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:9px;">
+              <p style="font-size:11.5px; color:var(--text-muted); line-height:1.35;">${esc(p.notes)}</p>
+              ${helperLink}
+            </div>
+            ${showUrl ? `
+              <label class="field-label">Dirección local o servidor</label>
+              <input type="text" id="${containerId}_url_${p.id}" value="${esc(p.base_url)}" style="margin-bottom:8px;" />
+            ` : ""}
           </div>
-          <p style="font-size:11.5px; color:var(--text-muted); margin-bottom:9px;">${esc(p.notes)}</p>
-          ${showUrl ? `
-            <label class="field-label">Endpoint Base URL</label>
-            <input type="text" id="${containerId}_url_${p.id}" value="${esc(p.base_url)}" style="margin-bottom:8px;" />
-          ` : ""}
           ${p.id !== "local" ? `
-            <div style="display:flex; gap:8px;">
-              <input type="password" id="${containerId}_key_${p.id}" placeholder="${p.masked_key ? `Guardada (${p.masked_key})` : "Pega tu API Key..."}" />
-              <button class="btn btn-primary btn-sm" onclick="saveProvider('${p.id}', '${containerId}')">Conectar</button>
+            <div class="key-input-row">
+              <input type="password" id="${inputId}" placeholder="${p.masked_key ? `Clave guardada (${p.masked_key})` : "Pega aquí tu clave de API..."}" />
+              <button type="button" class="eye-btn" onclick="togglePasswordField('${inputId}', this)">Ver</button>
+              <button type="button" class="btn btn-primary btn-sm" onclick="saveProvider('${p.id}', '${containerId}')">Conectar</button>
             </div>
           ` : `
-            <button class="btn btn-sm" onclick="saveProvider('${p.id}', '${containerId}')">Probar Conexión Local</button>
+            <div>
+              <button type="button" class="btn btn-sm" onclick="saveProvider('${p.id}', '${containerId}')">Detectar modelos locales</button>
+            </div>
           `}
         </div>
       `;
@@ -256,21 +294,42 @@ function renderProvidersCards(providersMap) {
 window.saveProvider = async function (providerId, prefix) {
   const keyEl = document.getElementById(`${prefix}_key_${providerId}`);
   const urlEl = document.getElementById(`${prefix}_url_${providerId}`);
-  const apiKey = keyEl && keyEl.value.trim() ? keyEl.value.trim() : "KEEP_EXISTING";
+  const typedKey = keyEl ? keyEl.value.trim() : "";
+  const existingProvider = state.bootstrap?.providers?.[providerId];
+
+  if (providerId !== "local" && providerId !== "omnirouter" && !typedKey && !existingProvider?.has_api_key) {
+    toast("Pega primero tu clave de API para poder conectar este proveedor.");
+    if (keyEl) keyEl.focus();
+    return;
+  }
+
+  const apiKey = typedKey ? typedKey : "KEEP_EXISTING";
   const baseUrl = urlEl ? urlEl.value.trim() : null;
-  toast(`Conectando y escaneando ${providerId}...`);
-  const res = await api("/api/ai/providers", "POST", {
-    provider_id: providerId,
-    api_key: apiKey,
-    base_url: baseUrl,
-    enabled: true,
-  });
-  state.scan = res.scan;
-  state.recommendations = res.recommendations;
-  const provs = await api("/api/ai/providers");
-  renderProvidersCards(provs.providers);
-  renderModelRecommendationsUI();
-  toast(`${res.provider.label}: ${res.scan.free_models_count} modelos GRATIS y ${res.scan.paid_models_count} PAGOS detectados.`);
+  toast("Verificando conexión y detectando modelos disponibles...");
+
+  try {
+    const res = await api("/api/ai/providers", "POST", {
+      provider_id: providerId,
+      api_key: apiKey,
+      base_url: baseUrl,
+      enabled: true,
+    });
+    state.scan = res.scan;
+    state.recommendations = res.recommendations;
+    const provs = await api("/api/ai/providers");
+    if (state.bootstrap) state.bootstrap.providers = provs.providers;
+    renderProvidersCards(provs.providers);
+    renderModelRecommendationsUI();
+
+    const pScan = res.scan?.providers?.[providerId] || {};
+    if (pScan.connected) {
+      toast(`¡${res.provider.label} conectado! ${pScan.free_count || 0} modelos gratis y ${pScan.paid_count || 0} de pago listos.`);
+    } else {
+      toast(pScan.error ? `No pudimos conectar con ${res.provider.label}: verifica tu clave.` : `Clave guardada para ${res.provider.label}.`);
+    }
+  } catch (e) {
+    toast(e.message);
+  }
 };
 
 async function refreshModelScan(force = false) {
@@ -288,7 +347,7 @@ function renderModelRecommendationsUI() {
   const scan = state.scan || { free_models_count: 0, paid_models_count: 0, vision_models_count: 0, models: [] };
   const recs = state.recommendations || { stages: [], profiles: { free: {}, balanced: {}, pro: {} }, estimated_cost_usd_per_video: {}, warnings: [] };
 
-  const badgeTxt = `🟢 ${scan.free_models_count} GRATIS · 💎 ${scan.paid_models_count} PAGOS · 👁️ ${scan.vision_models_count} VISIÓN`;
+  const badgeTxt = `${scan.free_models_count} Gratis · ${scan.paid_models_count} de Pago · ${scan.vision_models_count} con Visión`;
   document.getElementById("scanCountersBadge").textContent = badgeTxt;
   document.getElementById("wizModelCountBadge").textContent = badgeTxt;
 
@@ -297,13 +356,19 @@ function renderModelRecommendationsUI() {
   document.getElementById("costBalanced").textContent = `~$${(costs.balanced || 0).toFixed(3)} / video`;
   document.getElementById("costPro").textContent = `~$${(costs.pro || 0).toFixed(3)} / video`;
 
+  const profileNames = {
+    free: "Solo Modelos Gratis",
+    balanced: "Equilibrado Recomendado",
+    pro: "Máxima Calidad Pro",
+  };
+
   document.querySelectorAll("#profilesSelector .profile-card").forEach((c) => {
     c.classList.toggle("selected", c.dataset.profile === state.activeProfile);
     c.onclick = async () => {
       state.activeProfile = c.dataset.profile;
       await api("/api/settings", "POST", { model_profile: state.activeProfile });
       renderModelRecommendationsUI();
-      toast(`Perfil IA cambiado a: ${state.activeProfile.toUpperCase()}`);
+      toast(`Modo seleccionado: ${profileNames[state.activeProfile] || state.activeProfile}`);
     };
   });
 
@@ -325,16 +390,16 @@ function renderModelRecommendationsUI() {
     const selectedKey = activeMap[st.id] || "";
     const opts = pool.length
       ? pool.map((m) => {
-          const priceTag = m.is_free ? "🟢 GRATIS" : `💎 ${m.free_note}`;
-          const visTag = m.supports_vision ? " · 👁️ VISIÓN" : "";
+          const priceTag = m.is_free ? "GRATIS" : m.free_note;
+          const visTag = m.supports_vision ? " · Con Visión" : "";
           return `<option value="${esc(m.key)}" ${m.key === selectedKey ? "selected" : ""}>[${esc(m.provider_label)}] ${esc(m.display_name)} — ${priceTag}${visTag}</option>`;
         }).join("")
-      : `<option value="">Conecta una IA ${st.requires_vision ? "con VISIÓN " : ""}arriba</option>`;
+      : `<option value="">Conecta arriba un proveedor${st.requires_vision ? " con visión" : ""}</option>`;
 
     return `
       <tr>
-        <td><strong>${esc(st.name)}</strong><div style="font-size:11px; color:var(--text-dim);">${esc(st.role)}</div></td>
-        <td>${st.requires_vision ? '<span class="badge badge-vision">👁️ Exige Visión</span>' : '<span class="badge badge-free">⚡ Texto / JSON</span>'}</td>
+        <td><strong>${esc(st.name)}</strong><div style="font-size:11.5px; color:var(--text-dim);">${esc(st.role)}</div></td>
+        <td>${st.requires_vision ? '<span class="badge badge-vision">Requiere Visión</span>' : '<span class="badge badge-free">Texto rápido</span>'}</td>
         <td>
           <select onchange="overrideStageModel('${st.id}', this.value)">${opts}</select>
         </td>
@@ -352,14 +417,18 @@ window.overrideStageModel = async function (stageId, modelKey) {
   try {
     await api("/api/settings", "POST", { model_profile: "custom", stage_models: state.stageOverrides });
     renderModelRecommendationsUI();
-    toast(`Modelo actualizado para ${stageId}`);
+    toast("Modelo personalizado guardado.");
   } catch (e) {
     toast(e.message);
   }
 };
 
 document.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("btnRescanModels").addEventListener("click", () => refreshModelScan(true));
+  document.getElementById("btnRescanModels").addEventListener("click", async () => {
+    toast("Actualizando lista de modelos en vivo...");
+    await refreshModelScan(true);
+    toast("Lista de modelos actualizada.");
+  });
   document.getElementById("modelFilterSelect").addEventListener("change", () => renderModelRecommendationsUI());
 });
 
@@ -370,47 +439,53 @@ function renderChannelsDropdownAndTab(channelsObj) {
 
   const sel = document.getElementById("topChannelSelect");
   if (!items.length) {
-    sel.innerHTML = `<option value="">Modo Piloto Demo</option>`;
+    sel.innerHTML = `<option value="">Canal de prueba (Local)</option>`;
   } else {
     sel.innerHTML = items.map((c) => (
-      `<option value="${esc(c.id)}" ${c.id === activeId ? "selected" : ""}>📺 ${esc(c.name)} (${c.language.toUpperCase()})</option>`
+      `<option value="${esc(c.id)}" ${c.id === activeId ? "selected" : ""}>${esc(c.name)} (${c.language.toUpperCase()})</option>`
     )).join("");
   }
   sel.onchange = async () => {
     if (sel.value) {
       await api(`/api/channels/active/${sel.value}`, "POST");
-      toast(`Canal activo: ${sel.options[sel.selectedIndex].text}`);
+      toast(`Canal seleccionado: ${sel.options[sel.selectedIndex].text}`);
     }
   };
 
   const grid = document.getElementById("channelsListGrid");
   if (!items.length) {
-    grid.innerHTML = `<div class="card">No tienes canales guardados aún. Usa el botón <strong>+ Crear Canal en el Wizard</strong>.</div>`;
+    grid.innerHTML = `
+      <div class="card" style="grid-column:1/-1; text-align:center; padding:28px;">
+        <h3 style="font-size:16px; margin-bottom:6px;">Todavía no has creado ningún canal</h3>
+        <p style="font-size:13px; color:var(--text-muted); margin-bottom:14px;">Configura el nombre, idioma y voz de tu primer canal en menos de un minuto.</p>
+        <button class="btn btn-primary" onclick="openWizard(3)">+ Crear mi primer canal</button>
+      </div>
+    `;
     return;
   }
   grid.innerHTML = items.map((c) => {
     const s = c.sessions || {};
     return `
-      <div class="card">
+      <div class="card" style="margin:0;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
           <div>
             <strong style="font-size:15px;">${esc(c.name)}</strong>
-            <span class="badge badge-vision" style="margin-left:6px;">${c.language.toUpperCase()} · 62-72s</span>
+            <span class="badge badge-vision" style="margin-left:6px;">${c.language === "en" ? "Inglés" : "Español"} · 62-72 s</span>
           </div>
-          ${c.id === activeId ? '<span class="badge badge-free">Activo</span>' : `<button class="btn btn-sm" onclick="setActiveChannel('${c.id}')">Activar</button>`}
+          ${c.id === activeId ? '<span class="badge badge-free">Canal activo</span>' : `<button class="btn btn-sm" onclick="setActiveChannel('${c.id}')">Usar este canal</button>`}
         </div>
-        <p style="font-size:12.5px; color:var(--text-muted); margin-bottom:8px;">
-          Grupo Cooldown 30d: <code>${esc(c.group)}</code> · Voz: <code>${esc(c.voice_preference)}</code>
+        <p style="font-size:12.5px; color:var(--text-muted); margin-bottom:10px;">
+          Categoría: <strong>${esc(c.group)}</strong> · Narrador: <strong>${esc(c.voice_preference)}</strong>
         </p>
-        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
           <button class="btn btn-sm" onclick="connectSocial('${c.id}', 'youtube')">
-            ${s.youtube ? "✅ YouTube Conectado" : "🔗 Conectar YouTube"}
+            ${s.youtube ? "✅ YouTube conectado" : "Conectar YouTube"}
           </button>
           <button class="btn btn-sm" onclick="connectSocial('${c.id}', 'tiktok')">
-            ${s.tiktok ? "✅ TikTok Conectado" : "🔗 Conectar TikTok"}
+            ${s.tiktok ? "✅ TikTok conectado" : "Conectar TikTok"}
           </button>
           <button class="btn btn-sm" onclick="connectSocial('${c.id}', 'instagram')">
-            ${s.instagram ? "✅ Instagram Conectado" : "🔗 Conectar Instagram"}
+            ${s.instagram ? "✅ Instagram conectado" : "Conectar Instagram"}
           </button>
         </div>
       </div>
@@ -418,23 +493,26 @@ function renderChannelsDropdownAndTab(channelsObj) {
   }).join("");
 }
 
+window.openWizard = openWizard;
+
 window.setActiveChannel = async function (cid) {
   await api(`/api/channels/active/${cid}`, "POST");
   await refreshBootstrap();
-  toast("Canal predeterminado cambiado.");
+  toast("Canal activo actualizado.");
 };
 
 window.connectSocial = async function (channelId, platform) {
-  toast(`Abriendo Chrome limpio para iniciar sesión en ${platform}...`);
+  const names = { youtube: "YouTube", tiktok: "TikTok", instagram: "Instagram" };
+  toast(`Abriendo navegador para conectar ${names[platform] || platform}...`);
   await api("/api/social/connect", "POST", { channel_id: channelId, platform });
   const poll = setInterval(async () => {
     const st = await api(`/api/social/status/${channelId}`);
     if (!st.pending[platform]) {
       clearInterval(poll);
       if (st.sessions[platform]) {
-        toast(`✅ ¡Sesión de ${platform} guardada y aislada para ${channelId}!`);
+        toast(`¡Cuenta de ${names[platform] || platform} vinculada correctamente!`);
         const wEl = document.getElementById(`wizStatus_${platform}`);
-        if (wEl) wEl.innerHTML = `<span style="color:#6ee7b7; font-weight:700;">✅ Sesión guardada</span>`;
+        if (wEl) wEl.innerHTML = `<span style="color:#6ee7b7; font-weight:700;">✅ Cuenta conectada</span>`;
         refreshBootstrap();
       }
     }
@@ -458,32 +536,45 @@ function updateWizardStepUI() {
     pill.classList.toggle("done", n < s);
   });
   document.getElementById("btnWizardPrev").style.display = s > 1 ? "inline-flex" : "none";
-  document.getElementById("btnWizardNext").textContent = s === 4 ? "🚀 Finalizar y Entrar al Estudio" : "Siguiente Paso →";
+  document.getElementById("btnWizardNext").textContent = s === 4 ? "Finalizar y abrir el Estudio" : "Continuar →";
 }
 
 function renderWizardHardware(hw, stock, legacy) {
   const wrap = document.getElementById("wizHardwareSummary");
+  const gpuLabel = hw.video_encoder === "h264_nvenc"
+    ? `⚡ ${hw.gpu_name} (Aceleración GPU)`
+    : `${hw.gpu_name || "Procesador"}`;
+  const stockActive = stock.has_pixabay || stock.has_pexels;
+
   wrap.innerHTML = `
-    <div class="card" style="margin:0;">
-      <div style="font-size:12px; color:var(--text-muted);">Aceleración de Video</div>
-      <div style="font-weight:700; margin-top:4px; color:#6ee7b7;">⚡ ${esc(hw.gpu_name || "CPU")} (${esc(hw.video_encoder)})</div>
+    <div class="card" style="margin:0; padding:13px 15px;">
+      <div style="font-size:11.5px; color:var(--text-muted);">Tarjeta gráfica</div>
+      <div style="font-weight:700; font-size:13px; margin-top:4px; color:#6ee7b7;">${esc(gpuLabel)}</div>
     </div>
-    <div class="card" style="margin:0;">
-      <div style="font-size:12px; color:var(--text-muted);">Motor Multimedia Offline</div>
-      <div style="font-weight:700; margin-top:4px;">${hw.ffmpeg_ok ? "✅ FFmpeg + libass Listo" : "⚠️ FFmpeg pendiente"}</div>
+    <div class="card" style="margin:0; padding:13px 15px;">
+      <div style="font-size:11.5px; color:var(--text-muted);">Motor de video integrado</div>
+      <div style="font-weight:700; font-size:13px; margin-top:4px;">${hw.ffmpeg_ok ? "✅ Incluido y listo sin Internet" : "⚠️ Revisando componentes"}</div>
     </div>
-    <div class="card" style="margin:0;">
-      <div style="font-size:12px; color:var(--text-muted);">Espacio Libre & Stock</div>
-      <div style="font-weight:700; margin-top:4px;">💾 ${hw.disk_free_gb || 0} GB · ${stock.has_pixabay || stock.has_pexels ? "✅ Stock Activo" : "Falta API Stock"}</div>
+    <div class="card" style="margin:0; padding:13px 15px;">
+      <div style="font-size:11.5px; color:var(--text-muted);">Espacio libre y escenas</div>
+      <div style="font-weight:700; font-size:13px; margin-top:4px;">${hw.disk_free_gb || 0} GB libres · ${stockActive ? "✅ Escenas activas" : "Pendiente conectar"}</div>
     </div>
   `;
 
+  // Clean, human Legacy Import Banner (never says "0 canal(es)" or raw dev paths!)
   const banner = document.getElementById("legacyImportBanner");
   const hasAnyChannels = Object.keys(state.bootstrap?.channels?.items || {}).length > 0;
-  if (legacy?.has_legacy && !hasAnyChannels) {
+  if (legacy?.has_legacy && (!hasAnyChannels || !stockActive)) {
     banner.style.display = "block";
-    document.getElementById("legacyImportText").textContent =
-      `Encontramos ${legacy.channels_count} canal(es) y claves de Stock en ${legacy.source}. ¿Quieres importarlos sin volver a escribirlos?`;
+    let msg = "";
+    if (legacy.channels_count > 0 && legacy.has_stock_keys) {
+      msg = `Detectamos ${legacy.channels_count === 1 ? "1 canal guardado" : `${legacy.channels_count} canales guardados`} y tus claves de escenas listas en este equipo. ¿Deseas cargarlos automáticamente?`;
+    } else if (legacy.channels_count > 0) {
+      msg = `Detectamos ${legacy.channels_count === 1 ? "1 canal configurado" : `${legacy.channels_count} canales configurados`} previamente en este equipo. Impórtalos con un clic.`;
+    } else {
+      msg = "Detectamos tus claves gratuitas de Pixabay / Pexels ya guardadas en este equipo. Cárgalas con un clic para no volver a pegarlas.";
+    }
+    document.getElementById("legacyImportText").textContent = msg;
   } else {
     banner.style.display = "none";
   }
@@ -502,7 +593,7 @@ function renderWizardVoices() {
         <div style="font-size:13px; font-weight:700;">${esc(v.name)}</div>
         <div style="font-size:11px; color:var(--text-muted);">${esc(v.tone)}</div>
       </div>
-      <button type="button" class="btn btn-sm" onclick="event.stopPropagation(); playVoiceSample('${v.id}', this)">▶ Oír</button>
+      <button type="button" class="btn btn-xs" onclick="event.stopPropagation(); playVoiceSample('${v.id}', this)">▶ Escuchar</button>
     </div>
   `).join("");
 }
@@ -515,10 +606,10 @@ window.selectWizardVoice = function (vid) {
 window.playVoiceSample = function (voiceId, btnEl) {
   const player = document.getElementById("voiceAudioPlayer");
   const oldTxt = btnEl.textContent;
-  btnEl.textContent = "🔊...";
+  btnEl.textContent = "🔊 Sonando...";
   player.src = `/api/voices/sample/${encodeURIComponent(voiceId)}`;
   player.onended = () => { btnEl.textContent = oldTxt; };
-  player.onerror = () => { btnEl.textContent = oldTxt; toast("Error sintetizando muestra de voz."); };
+  player.onerror = () => { btnEl.textContent = oldTxt; toast("No se pudo reproducir la muestra de voz."); };
   player.play().catch(() => { btnEl.textContent = oldTxt; });
 };
 
@@ -541,17 +632,23 @@ function bindWizardControls() {
   document.getElementById("wizSubStyle").addEventListener("change", updateSubtitleSimulator);
   document.getElementById("wizSubColor").addEventListener("change", updateSubtitleSimulator);
 
-  document.getElementById("btnWizOpenPixabay").addEventListener("click", () => {
-    api("/api/system/open-url", "POST", { target: "https://pixabay.com/api/docs/" });
-  });
+  document.getElementById("btnWizOpenPixabay").addEventListener("click", () => openExternalUrl("https://pixabay.com/api/docs/"));
+  document.getElementById("btnWizOpenPexels").addEventListener("click", () => openExternalUrl("https://www.pexels.com/api/"));
 
   document.getElementById("btnImportLegacyNow").addEventListener("click", async () => {
+    const legacyInfo = state.bootstrap?.legacy_cli || {};
     const res = await api("/api/import-legacy", "POST");
     if (res.imported) {
-      await api("/api/settings", "POST", { wizard_completed: true });
       await refreshBootstrap();
-      toast("¡Canales, sesiones y claves importadas con éxito!");
-      document.getElementById("wizardBackdrop").classList.remove("open");
+      document.getElementById("legacyImportBanner").style.display = "none";
+      if ((legacyInfo.channels_count || 0) > 0) {
+        toast("Canales y claves importados. Ahora conecta o revisa tu proveedor de IA.");
+        state.wizardStep = 2;
+        updateWizardStepUI();
+      } else {
+        document.getElementById("wizStockMsg").textContent = "✅ Claves de escenas importadas y listas.";
+        toast("Claves de escenas importadas correctamente.");
+      }
     }
   });
 
@@ -559,15 +656,20 @@ function bindWizardControls() {
     const pix = document.getElementById("wizPixabayInput").value.trim();
     const pex = document.getElementById("wizPexelsInput").value.trim();
     const msgEl = document.getElementById("wizStockMsg");
-    msgEl.textContent = "Verificando conexión...";
+    if (!pix && !pex) {
+      msgEl.textContent = "Pega al menos una clave de Pixabay o Pexels primero.";
+      return;
+    }
+    msgEl.textContent = "Comprobando clave...";
     const res = await api("/api/stock/save", "POST", { pixabay_key: pix, pexels_key: pex });
-    msgEl.textContent = res.validation.pixabay.message || res.validation.pexels.message || "Guardado.";
+    msgEl.textContent = res.validation.pixabay.message || res.validation.pexels.message || "Claves guardadas.";
+    await refreshBootstrap();
   });
 
   document.getElementById("btnSuggestNichesAI").addEventListener("click", async () => {
     const btn = document.getElementById("btnSuggestNichesAI");
     btn.disabled = true;
-    btn.textContent = "⏳ Analizando mercado...";
+    btn.textContent = "Analizando temáticas...";
     try {
       const res = await api("/api/ai/suggest-niches", "POST", {
         language: document.getElementById("wizLangSelect").value,
@@ -576,18 +678,18 @@ function bindWizardControls() {
       const box = document.getElementById("wizNicheSuggestions");
       box.style.display = "grid";
       box.innerHTML = (res.suggestions || []).map((s) => `
-        <div class="profile-card" onclick='applyNicheSuggestion(${JSON.stringify(s).replace(/'/g, "&#39;")})'>
-          <div style="display:flex; justify-content:space-between; align-items:center;">
-            <strong>${esc(s.name)}</strong>
+        <div class="profile-card" style="padding:11px 13px;" onclick='applyNicheSuggestion(${JSON.stringify(s).replace(/'/g, "&#39;")})'>
+          <div class="profile-top">
+            <strong style="font-size:13.5px;">${esc(s.name)}</strong>
             <span class="badge badge-free">${esc(s.rpm_tier)}</span>
           </div>
-          <p style="font-size:11.5px; color:#c7d2fe; margin:5px 0;">${esc(s.niche)}</p>
-          <p style="font-size:11px; color:var(--text-muted);">${esc(s.reason)}</p>
+          <p style="font-size:11.5px; color:#c7d2fe; margin:4px 0;">${esc(s.niche)}</p>
+          <p style="font-size:11px; color:var(--text-muted); line-height:1.35;">${esc(s.reason)}</p>
         </div>
       `).join("");
     } finally {
       btn.disabled = false;
-      btn.textContent = "✨ Sugerir 3 Nichos Rentables con IA";
+      btn.textContent = "✨ Recomendar 3 temáticas rentables";
     }
   });
 
@@ -624,7 +726,7 @@ function bindWizardControls() {
       await api("/api/settings", "POST", { wizard_completed: true });
       document.getElementById("wizardBackdrop").classList.remove("open");
       await refreshBootstrap();
-      toast("🎉 ¡Todo listo! Ya puedes producir tu primer video viral.");
+      toast("¡Configuración completada! Ya puedes crear tu primer video.");
       return;
     }
     state.wizardStep += 1;
@@ -640,7 +742,7 @@ window.applyNicheSuggestion = function (s) {
     state.selectedVoice = s.voice_id;
     renderWizardVoices();
   }
-  toast(`Plantilla '${s.name}' cargada.`);
+  toast(`Temática "${s.name}" aplicada.`);
 };
 
 async function saveChannelFromWizard() {
@@ -651,7 +753,7 @@ async function saveChannelFromWizard() {
   });
   const res = await api("/api/channels", "POST", {
     channel_id: state.savedWizardChannelId,
-    name: document.getElementById("wizChannelName").value.trim() || "Mi Canal Viral",
+    name: document.getElementById("wizChannelName").value.trim() || "Mi Canal",
     group: document.getElementById("wizChannelGroup").value.trim(),
     language: document.getElementById("wizLangSelect").value,
     niche: document.getElementById("wizChannelNiche").value.trim() || "Curiosidades",
@@ -667,44 +769,57 @@ async function saveChannelFromWizard() {
   state.savedWizardChannelId = res.channel_id;
 }
 
-/* ==================== LIVE 9-SUBAGENT PRODUCTION STUDIO ==================== */
+/* ==================== LIVE PRODUCTION STUDIO ==================== */
+function syncProdModeUI(mode) {
+  state.productionMode = mode || "auto";
+  document.querySelectorAll("#prodModeSwitch .mode-pill").forEach((b) => {
+    b.classList.toggle("active", b.dataset.mode === state.productionMode);
+  });
+}
+
 function renderPipelineStagesIdle() {
   const grid = document.getElementById("stagesGrid");
   grid.innerHTML = state.defaultStages.map((s) => `
     <div class="stage-card">
       <div class="stage-top">
         <span class="stage-name">${esc(s.name)}</span>
-        <span class="stage-timer">0.0s</span>
+        <span class="stage-timer">—</span>
       </div>
       <div class="stage-model">${esc(s.role)}</div>
-      <div class="stage-summary">En espera</div>
+      <div class="stage-summary">Listo para iniciar</div>
     </div>
   `).join("");
 }
 
 function bindStudioControls() {
-  document.getElementById("prodModeSelect").addEventListener("change", async (e) => {
-    await api("/api/settings", "POST", { production_mode: e.target.value });
+  document.querySelectorAll("#prodModeSwitch .mode-pill").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const m = btn.dataset.mode;
+      syncProdModeUI(m);
+      await api("/api/settings", "POST", { production_mode: m });
+      toast(m === "copilot"
+        ? "Modo Copiloto: podrás revisar el guión y elegir la foto antes del montaje."
+        : "Modo Automático: el video se creará de principio a fin sin pausas.");
+    });
   });
 
   document.getElementById("btnStartProduction").addEventListener("click", async () => {
     const chId = document.getElementById("topChannelSelect").value || null;
     const topic = document.getElementById("customTopicInput").value.trim() || null;
-    const mode = document.getElementById("prodModeSelect").value;
     const demo = document.getElementById("demoModeCheck").checked || !chId;
 
     try {
       const res = await api("/api/pipeline/start", "POST", {
         channel_id: chId,
         custom_topic: topic,
-        mode,
+        mode: state.productionMode,
         demo_mode: demo,
       });
       if (!res.ok) {
-        toast(res.error || "No se pudo iniciar la producción.");
+        toast(res.error || "No se pudo iniciar la creación del video.");
         return;
       }
-      toast("🎬 ¡Producción iniciada! Observa los 9 subagentes en tiempo real.");
+      toast("¡Creación en marcha! Puedes seguir cada etapa en vivo aquí abajo.");
       pollPipeline();
     } catch (e) {
       toast(e.message);
@@ -729,35 +844,50 @@ function pollPipeline() {
 }
 
 function renderLivePipeline(st) {
-  document.getElementById("pipelineTotalTimer").textContent = `Δt Total: ${st.total_elapsed_sec || 0}s · Estado: ${st.status.toUpperCase()}`;
+  const statusLabels = {
+    running: "En progreso",
+    awaiting_copilot: "Esperando tu confirmación",
+    completed: "Completado",
+    error: "Detenido por aviso",
+  };
+  document.getElementById("pipelineTotalTimer").textContent =
+    `Tiempo total: ${st.total_elapsed_sec || 0} s · ${statusLabels[st.status] || st.status}`;
+
+  const stageStatusMap = {
+    pending: "En cola",
+    running: "Trabajando...",
+    waiting_user: "Esperando tu revisión",
+    done: "Completado",
+    skipped: "Omitido",
+    error: "Revisar aviso",
+  };
 
   const grid = document.getElementById("stagesGrid");
   grid.innerHTML = (st.stages || []).map((s) => `
     <div class="stage-card ${esc(s.status)}">
       <div class="stage-top">
         <span class="stage-name">${esc(s.name)}</span>
-        <span class="stage-timer">${s.elapsed_sec ? `${s.elapsed_sec}s` : (s.status === "running" ? "⏳..." : "")}</span>
+        <span class="stage-timer">${s.elapsed_sec ? `${s.elapsed_sec} s` : (s.status === "running" ? "En curso..." : "—")}</span>
       </div>
-      <div class="stage-model" title="${esc(s.model_key)}">🤖 ${esc(s.model_key || s.role)}</div>
-      <div class="stage-summary">${esc(s.summary || s.status)}</div>
+      <div class="stage-model" title="${esc(s.model_key)}">${esc(s.model_key ? s.model_key.replace("::", " · ") : s.role)}</div>
+      <div class="stage-summary">${esc(s.summary || stageStatusMap[s.status] || s.status)}</div>
     </div>
   `).join("");
 
-  // Previews
   const p = st.previews || {};
   if (p.candidates_grid) {
-    document.getElementById("prevGridWrap").innerHTML = `<img src="${mediaUrl(p.candidates_grid)}" alt="Grid 2x2" />`;
+    document.getElementById("prevGridWrap").innerHTML = `<img src="${mediaUrl(p.candidates_grid)}" alt="Fotos reales candidatas" />`;
   }
   if (p.mosaico_clips) {
-    document.getElementById("prevMosaicWrap").innerHTML = `<img src="${mediaUrl(p.mosaico_clips)}" alt="Mosaico" />`;
+    document.getElementById("prevMosaicWrap").innerHTML = `<img src="${mediaUrl(p.mosaico_clips)}" alt="Escenas de apoyo" />`;
   }
   if (p.qa_strip) {
-    document.getElementById("prevQaWrap").innerHTML = `<img src="${mediaUrl(p.qa_strip)}" alt="Tira QA" />`;
+    document.getElementById("prevQaWrap").innerHTML = `<img src="${mediaUrl(p.qa_strip)}" alt="Revisión de calidad" />`;
   }
   if (p.final_video) {
     document.getElementById("prevFinalWrap").innerHTML = `
       <video src="${mediaUrl(p.final_video)}" controls poster="${p.thumbnail ? mediaUrl(p.thumbnail) : ""}"></video>
-      ${p.publication_folder ? `<button class="btn btn-sm" style="margin-top:6px;" onclick="openFolder('${esc(p.publication_folder.replace(/\\/g, "\\\\"))}')">📂 Abrir Carpeta</button>` : ""}
+      ${p.publication_folder ? `<button class="btn btn-sm" style="margin-top:8px;" onclick="openFolder('${esc(p.publication_folder.replace(/\\/g, "\\\\"))}')">📂 Ver en carpeta</button>` : ""}
     `;
   }
 
@@ -767,23 +897,23 @@ function renderLivePipeline(st) {
     copCard.style.display = "block";
     const sc = st.copilot_data?.script?.full_script || "";
     if (!document.getElementById("copilotScriptBox")) {
-      document.getElementById("copilotTitle").textContent = "🎛️ Copiloto: Revisa o retoca el guión antes de generar audio y video";
+      document.getElementById("copilotTitle").textContent = "🎛️ Revisa o edita el guión antes de grabar la narración";
       document.getElementById("copilotBody").innerHTML = `
         <textarea id="copilotScriptBox" rows="5" style="margin-bottom:10px;">${esc(sc)}</textarea>
-        <button class="btn btn-emerald" onclick="approveCopilotScript()">✅ Aprobar Guión y Continuar</button>
+        <button class="btn btn-emerald" onclick="approveCopilotScript()">Aprobar guión y continuar</button>
       `;
     }
   } else if (st.status === "awaiting_copilot" && st.copilot_gate === "visuals") {
     copCard.style.display = "block";
     const cands = st.copilot_data?.candidates || [];
     const rec = st.copilot_data?.recommended_candidate || 1;
-    document.getElementById("copilotTitle").textContent = `🎛️ Copiloto: Elige la foto real para el Hook 0-4s (IA recomienda #${rec})`;
+    document.getElementById("copilotTitle").textContent = `🎛️ Elige la foto real para los primeros 4 segundos (Recomendada: Opción #${rec})`;
     document.getElementById("copilotBody").innerHTML = `
       <div class="grid-4" style="margin-bottom:10px;">
         ${cands.map((cp, idx) => `
           <div class="preview-box" style="cursor:pointer; border-color:${idx + 1 === rec ? "var(--emerald)" : "var(--border)"};" onclick="approveCopilotPhoto(${idx + 1})">
-            <strong>Opción #${idx + 1} ${idx + 1 === rec ? "⭐ IA" : ""}</strong>
-            <img src="${mediaUrl(cp)}" />
+            <strong>Opción #${idx + 1} ${idx + 1 === rec ? "⭐ Recomendada" : ""}</strong>
+            <img src="${mediaUrl(cp)}" alt="Candidata ${idx + 1}" />
           </div>
         `).join("")}
       </div>
@@ -797,15 +927,15 @@ function renderLivePipeline(st) {
 window.approveCopilotScript = async function () {
   const txt = document.getElementById("copilotScriptBox").value;
   await api("/api/pipeline/copilot", "POST", { full_script: txt });
-  toast("Guión aprobado. Lanzando ramas paralelas SEO + Visuales...");
+  toast("Guión confirmado. Buscando fotografías reales y preparando títulos...");
 };
 
 window.approveCopilotPhoto = async function (idx) {
   await api("/api/pipeline/copilot", "POST", { selected_candidate: idx });
-  toast(`Foto real #${idx} seleccionada. Iniciando render GPU...`);
+  toast(`Fotografía #${idx} elegida. Montando el video en tu tarjeta gráfica...`);
 };
 
-/* ==================== GALLERY & 30-DAY COOLDOWN ==================== */
+/* ==================== GALLERY & 30-DAY PROTECTION ==================== */
 async function refreshGallery() {
   const res = await api("/api/gallery");
   renderCacheBar(res.cache);
@@ -813,19 +943,23 @@ async function refreshGallery() {
   const vGrid = document.getElementById("galleryVideosGrid");
   const vids = res.videos || [];
   if (!vids.length) {
-    vGrid.innerHTML = `<div class="card" style="grid-column:1/-1; color:var(--text-muted);">Aún no hay videos empaquetados en esta biblioteca. ¡Produce el primero en la pestaña Estudio!</div>`;
+    vGrid.innerHTML = `
+      <div class="card" style="grid-column:1/-1; color:var(--text-muted); text-align:center; padding:26px;">
+        Todavía no tienes videos terminados en tu biblioteca. Ve a <strong>Crear Videos</strong> para producir el primero.
+      </div>
+    `;
   } else {
     vGrid.innerHTML = vids.map((v, idx) => `
       <div class="card" style="margin:0;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
           <span class="badge badge-vision">${esc(v.channel)}</span>
-          <span style="font-size:11.5px; color:#6ee7b7;">${v.duration_sec ? `${v.duration_sec}s` : "62-72s"}</span>
+          <span style="font-size:11.5px; color:#6ee7b7;">${v.duration_sec ? `${v.duration_sec} s` : "62-72 s"}</span>
         </div>
         ${v.video_path ? `<video src="${mediaUrl(v.video_path)}" controls poster="${v.thumbnail_path ? mediaUrl(v.thumbnail_path) : ""}" style="width:100%; max-height:280px; border-radius:8px; background:#000;"></video>` : ""}
-        <div style="font-size:12.5px; font-weight:700; margin:8px 0;">${esc(v.slug)}</div>
+        <div style="font-size:13px; font-weight:700; margin:8px 0;">${esc(v.slug)}</div>
         <div style="display:flex; gap:8px;">
-          <button class="btn btn-primary btn-sm" onclick="copyPack(${idx})">📋 Copiar Pack Viral</button>
-          <button class="btn btn-sm" onclick="openFolder('${esc(v.folder.replace(/\\/g, "\\\\"))}')">📂 Carpeta</button>
+          <button class="btn btn-primary btn-sm" onclick="copyPack(${idx})">Copiar título y descripción</button>
+          <button class="btn btn-sm" onclick="openFolder('${esc(v.folder.replace(/\\/g, "\\\\"))}')">Abrir carpeta</button>
         </div>
       </div>
     `).join("");
@@ -837,21 +971,20 @@ async function refreshGallery() {
   cBody.innerHTML = cools.length
     ? cools.map((c) => `
         <tr>
-          <td><code>${esc(c.group)}</code></td>
+          <td><strong>${esc(c.group)}</strong></td>
           <td>${esc(c.channel)}</td>
           <td>${esc(c.topic)}</td>
-          <td><code>${esc(c.image_dhash || "N/A")}</code></td>
-          <td><span class="badge badge-paid">${c.days_remaining} días restantes</span></td>
+          <td><span class="badge badge-paid">Protegido por ${c.days_remaining} días más</span></td>
         </tr>
       `).join("")
-    : `<tr><td colspan="5" style="color:var(--text-dim);">Sin temas bloqueados en este momento.</td></tr>`;
+    : `<tr><td colspan="4" style="color:var(--text-dim);">Aún no hay temas registrados en el historial de los últimos 30 días.</td></tr>`;
 }
 
 window.copyPack = function (idx) {
   const v = (window._galleryVideos || [])[idx];
   if (v && v.copy_text) {
     navigator.clipboard.writeText(v.copy_text);
-    toast("📋 ¡Título, descripción, comentario fijado y hashtags copiados!");
+    toast("Título, descripción, primer comentario y etiquetas copiados al portapapeles.");
   }
 };
 

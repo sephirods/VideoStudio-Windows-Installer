@@ -92,7 +92,7 @@ async def check_for_updates(custom_api_url: str | None = None) -> dict[str, Any]
         _UPDATE_STATE.update({
             "status": "repo_pending",
             "update_available": False,
-            "message": f"v{current_ver} · Configura tu repo Git cuando lo crees",
+            "message": f"Versión v{current_ver} · Al día",
         })
         return dict(_UPDATE_STATE)
 
@@ -111,7 +111,7 @@ async def check_for_updates(custom_api_url: str | None = None) -> dict[str, Any]
                 "status": "repo_pending",
                 "update_available": False,
                 "latest_version": current_ver,
-                "message": f"v{current_ver} · Canal Git listo (esperando 1er Release)",
+                "message": f"Versión v{current_ver} · Sin actualizaciones pendientes",
                 "error": None,
             })
             return dict(_UPDATE_STATE)
@@ -155,14 +155,14 @@ async def check_for_updates(custom_api_url: str | None = None) -> dict[str, Any]
                 "status": "up_to_date",
                 "latest_version": clean_remote,
                 "update_available": False,
-                "message": f"v{current_ver} · Estás en la última versión",
+                "message": f"Versión v{current_ver} · Al día",
                 "error": None,
             })
     except Exception as e:
         _UPDATE_STATE.update({
             "status": "error",
             "update_available": False,
-            "message": f"v{current_ver} · Sin conexión al servidor de actualizaciones",
+            "message": f"Versión v{current_ver} · Sin conexión al servidor",
             "error": str(e)[:160],
         })
 

@@ -169,18 +169,30 @@ def build_all(skip_pyinstaller: bool = False) -> dict:
         ]
         subprocess.run(pyi_cmd, cwd=str(ROOT), check=True)
 
-        # Mandatory smoke test on compiled VideoStudio.exe before packaging installer!
+        # Mandatory smoke tests on compiled VideoStudio.exe before packaging installer!
         import tempfile
         with tempfile.TemporaryDirectory(prefix="vs_pyi_smoke_") as tmp_smoke:
             smoke_out = Path(tmp_smoke) / "selftest.txt"
+            smoke_gui_out = Path(tmp_smoke) / "smokegui.txt"
             env = os.environ.copy()
             env["VIDEOSTUDIO_APPDATA_DIR"] = str(Path(tmp_smoke) / "appdata")
             env["VIDEOSTUDIO_SELFTEST_FILE"] = str(smoke_out)
+            env["VIDEOSTUDIO_SMOKE_GUI_FILE"] = str(smoke_gui_out)
             exe_built = ROOT / "dist" / "VideoStudio" / "VideoStudio.exe"
+
+            # 1) CLI & Bundled Path Self-Test
             res = subprocess.run([str(exe_built), "--self-test"], env=env, capture_output=True, text=True)
             if res.returncode != 0 or not smoke_out.exists():
-                raise RuntimeError(f"Smoke test de VideoStudio.exe falló (rc={res.returncode}): {res.stderr}")
-            print(f"      -> Smoke Test EXE OK: {smoke_out.read_text(encoding='utf-8')}")
+                raise RuntimeError(f"Smoke test CLI de VideoStudio.exe falló (rc={res.returncode}): {res.stderr}")
+            print(f"      -> Smoke Test CLI OK: {smoke_out.read_text(encoding='utf-8')}")
+
+            # 2) Real Windowed Uvicorn + Edge WebView2 Live DOM Boot Test!
+            res_gui = subprocess.run([str(exe_built), "--smoke-gui"], env=env, capture_output=True, text=True, timeout=30)
+            if res_gui.returncode != 0 or not smoke_gui_out.exists():
+                log_f = Path(tmp_smoke) / "appdata" / "logs" / "videostudio.log"
+                log_txt = log_f.read_text(encoding="utf-8", errors="replace") if log_f.exists() else res_gui.stderr
+                raise RuntimeError(f"Smoke test GUI (--windowed Uvicorn + WebView2) falló (rc={res_gui.returncode}):\n{log_txt}")
+            print(f"      -> Smoke Test GUI (Uvicorn + WebView2) OK: {smoke_gui_out.read_text(encoding='utf-8')}")
 
     print("[5/5] Compilando instalador final Offline con Inno Setup 6 (ISCC.exe)...")
     iscc = _find_iscc()

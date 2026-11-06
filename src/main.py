@@ -2,15 +2,18 @@
 """
 VideoStudio Pro — Windows Desktop Native Entrypoint.
 
-Modes:
-  1. Normal launch (`VideoStudio.exe`): Starts local FastAPI backend on 127.0.0.1:<free_port>,
-     opens native Windows Edge WebView2 window via `pywebview`, and registers a System Tray icon.
-  2. Embedded CLI Script Runner (`VideoStudio.exe --run-script <script.py> [args...]`):
-     Executes bundled CLI Python scripts offline without requiring external Python on the user's PC!
-  3. Headless Check (`VideoStudio.exe --self-test`): Runs fast boot & health check for CI / installer verification.
+CRITICAL WINDOWS GUI GUARANTEES:
+  1. Redirects `sys.stdout` and `sys.stderr` BEFORE any imports when running in PyInstaller
+     `--windowed` mode (where both are `None`), preventing `uvicorn` / `logging` `.isatty()` crashes.
+  2. Sets explicit Windows `AppUserModelID` + Win32 `WM_SETICON` so the taskbar, window titlebar,
+     and shortcuts always display the official VideoStudio Pro icon.
+  3. Supports `--smoke-gui` to verify full end-to-end startup (FastAPI + Uvicorn + Edge WebView2 DOM render)
+     on the actual compiled `.exe` before releasing any installer.
 """
 from __future__ import annotations
 
+import ctypes
+import io
 import os
 from pathlib import Path
 import runpy
@@ -18,14 +21,80 @@ import socket
 import sys
 import threading
 import time
+import traceback
 import webbrowser
 
-# Ensure UTF-8 streams on Windows even in windowed/noconsole mode
-for _stream_name in ("stdout", "stderr"):
-    _st = getattr(sys, _stream_name, None)
-    if _st is not None and hasattr(_st, "reconfigure"):
+
+def _ensure_safe_stdio() -> Path:
+    """
+    In PyInstaller --windowed mode on Windows, sys.stdout and sys.stderr are None.
+    Attach a real UTF-8 log file stream (whose .isatty() returns False) BEFORE any 3rd-party imports.
+    """
+    roaming = os.environ.get("VIDEOSTUDIO_APPDATA_DIR") or os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    log_dir = Path(roaming) / ("logs" if os.environ.get("VIDEOSTUDIO_APPDATA_DIR") else "VideoStudio/logs")
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "videostudio.log"
+        stream = open(log_file, "a", encoding="utf-8", errors="replace", buffering=1)
+    except Exception:
+        log_file = Path("videostudio.log")
+        stream = io.StringIO()  # type: ignore[assignment]
+
+    if sys.stdin is None:
         try:
-            _st.reconfigure(encoding="utf-8", errors="replace")
+            sys.stdin = open(os.devnull, "r", encoding="utf-8")
+        except Exception:
+            sys.stdin = io.StringIO("")  # type: ignore[assignment]
+
+    if sys.stdout is None:
+        sys.stdout = stream
+    elif hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+    if sys.stderr is None:
+        sys.stderr = stream
+    elif hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+    return log_file
+
+
+_APP_LOG_FILE = _ensure_safe_stdio()
+
+
+def _install_friendly_crash_dialog() -> None:
+    def _hook(exc_type, exc_val, exc_tb):
+        details = "".join(traceback.format_exception(exc_type, exc_val, exc_tb))
+        try:
+            if sys.stderr:
+                sys.stderr.write(f"\n[CRASH] {details}\n")
+                sys.stderr.flush()
+        except Exception:
+            pass
+        if sys.platform.startswith("win") and "--smoke-gui" not in sys.argv and "--self-test" not in sys.argv:
+            msg = (
+                "Ocurrió un problema inesperado al iniciar VideoStudio Pro.\n\n"
+                f"Detalle técnico registrado en:\n{_APP_LOG_FILE}\n\n"
+                f"Resumen: {exc_val}"
+            )
+            ctypes.windll.user32.MessageBoxW(0, msg, "VideoStudio Pro — Aviso", 0x10)
+
+    sys.excepthook = _hook
+
+
+_install_friendly_crash_dialog()
+
+
+def _set_windows_app_id() -> None:
+    if sys.platform.startswith("win"):
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("VideoStudio.Pro.Desktop.1.0")
         except Exception:
             pass
 
@@ -45,10 +114,53 @@ def _handle_embedded_script_mode() -> None:
 
 
 _handle_embedded_script_mode()
+_set_windows_app_id()
 
 import uvicorn  # noqa: E402
-from src.backend.app_paths import bootstrap_workspace, get_resource_root, get_version_info, load_app_settings  # noqa: E402
+from src.backend.app_paths import (  # noqa: E402
+    bootstrap_workspace,
+    get_appdata_dir,
+    get_install_root,
+    get_resource_root,
+    get_version_info,
+    load_app_settings,
+)
 from src.backend.api import app as fastapi_app  # noqa: E402
+
+
+def _locate_icon_path() -> Path | None:
+    candidates = [
+        get_install_root() / "videostudio.ico",
+        get_install_root() / "assets" / "videostudio.ico",
+        get_resource_root() / "assets" / "videostudio.ico",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
+def _apply_win32_window_icon(title_text: str, ico_path: Path | None) -> None:
+    if not sys.platform.startswith("win") or not ico_path or not ico_path.exists():
+        return
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.FindWindowW(None, title_text)
+        if not hwnd:
+            return
+        IMAGE_ICON = 1
+        LR_LOADFROMFILE = 0x0010
+        WM_SETICON = 0x0080
+        ICON_SMALL = 0
+        ICON_BIG = 1
+        hicon_big = user32.LoadImageW(None, str(ico_path), IMAGE_ICON, 64, 64, LR_LOADFROMFILE)
+        hicon_small = user32.LoadImageW(None, str(ico_path), IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+        if hicon_big:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
+        if hicon_small:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
+    except Exception:
+        pass
 
 
 def _find_free_port() -> int:
@@ -57,7 +169,7 @@ def _find_free_port() -> int:
         return int(s.getsockname()[1])
 
 
-def _wait_server_ready(port: int, timeout_sec: float = 8.0) -> bool:
+def _wait_server_ready(port: int, timeout_sec: float = 10.0) -> bool:
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
         try:
@@ -73,14 +185,13 @@ def _start_tray_icon(url: str, window_ref: list) -> None:
         import pystray
         from PIL import Image, ImageDraw
 
-        ico_path = get_resource_root() / "assets" / "videostudio.ico"
-        if ico_path.exists():
+        ico_path = _locate_icon_path()
+        if ico_path and ico_path.exists():
             icon_img = Image.open(ico_path)
         else:
-            icon_img = Image.new("RGBA", (64, 64), (15, 23, 42, 255))
+            icon_img = Image.new("RGBA", (64, 64), (67, 56, 202, 255))
             d = ImageDraw.Draw(icon_img)
-            d.rounded_rectangle((8, 8, 56, 56), radius=14, fill=(99, 102, 241, 255))
-            d.polygon([(26, 20), (26, 44), (46, 32)], fill=(255, 255, 255, 255))
+            d.polygon([(24, 18), (24, 46), (46, 32)], fill=(255, 255, 255, 255))
 
         def _open_studio(icon, item):
             if window_ref:
@@ -98,7 +209,7 @@ def _start_tray_icon(url: str, window_ref: list) -> None:
 
         menu = pystray.Menu(
             pystray.MenuItem("Abrir VideoStudio Pro", _open_studio, default=True),
-            pystray.MenuItem("Salir por completo", _quit_app),
+            pystray.MenuItem("Cerrar aplicación", _quit_app),
         )
         tray = pystray.Icon("VideoStudioPro", icon_img, "VideoStudio Pro", menu)
         threading.Thread(target=tray.run, name="VideoStudioTray", daemon=True).start()
@@ -118,8 +229,7 @@ def main() -> int:
         st_file = os.environ.get("VIDEOSTUDIO_SELFTEST_FILE")
         if st_file:
             Path(st_file).write_text(msg, encoding="utf-8")
-        if sys.stdout is not None:
-            print(msg, flush=True)
+        print(msg, flush=True)
         return 0
 
     bootstrap_workspace(force_sync=False)
@@ -127,18 +237,26 @@ def main() -> int:
     port = int(os.environ.get("VIDEOSTUDIO_PORT") or _find_free_port())
     url = f"http://127.0.0.1:{port}"
 
-    # Ensure static UI is mounted even if resource root resolved after import
     ui_dir = get_resource_root() / "src" / "ui"
     has_ui_mount = any(getattr(r, "name", "") == "ui" for r in fastapi_app.routes)
     if not has_ui_mount and ui_dir.exists():
         from fastapi.staticfiles import StaticFiles
         fastapi_app.mount("/", StaticFiles(directory=str(ui_dir), html=True), name="ui")
 
-    server_cfg = uvicorn.Config(fastapi_app, host="127.0.0.1", port=port, log_level="warning", access_log=False)
+    # CRITICAL: log_config=None guarantees Uvicorn never calls DefaultFormatter / sys.stderr.isatty()
+    server_cfg = uvicorn.Config(
+        fastapi_app,
+        host="127.0.0.1",
+        port=port,
+        log_config=None,
+        log_level="warning",
+        access_log=False,
+    )
     server = uvicorn.Server(server_cfg)
     srv_thread = threading.Thread(target=server.run, name="VideoStudioAPIServer", daemon=True)
     srv_thread.start()
-    _wait_server_ready(port)
+    if not _wait_server_ready(port):
+        raise RuntimeError(f"El servidor local no pudo iniciar en el puerto {port}.")
 
     if "--headless-server" in sys.argv:
         print(f"SERVER_READY {url}", flush=True)
@@ -148,34 +266,82 @@ def main() -> int:
         except KeyboardInterrupt:
             return 0
 
+    is_smoke_gui = "--smoke-gui" in sys.argv
     window_holder: list = []
-    _start_tray_icon(url, window_holder)
+    if not is_smoke_gui:
+        _start_tray_icon(url, window_holder)
+
+    ico_path = _locate_icon_path()
+    title = f"{ver.get('app_name', 'VideoStudio Pro')} v{ver.get('version', '1.0.0')}"
 
     try:
         import webview
 
-        title = f"{ver.get('app_name', 'VideoStudio Pro')} v{ver.get('version', '1.0.0')}"
         win = webview.create_window(
             title=title,
             url=url,
-            width=1360,
-            height=860,
-            min_size=(1060, 700),
-            background_color="#090D16",
+            width=1400,
+            height=880,
+            min_size=(1100, 720),
+            background_color="#070B14",
             text_select=True,
+            hidden=is_smoke_gui,
         )
         window_holder.append(win)
 
-        def _on_closing():
-            settings = load_app_settings()
-            if settings.get("minimize_to_tray", False) and "--allow-tray-hide" in sys.argv:
-                win.hide()
-                return False
-            return True
+        def _on_shown():
+            time.sleep(0.15)
+            _apply_win32_window_icon(title, ico_path)
 
-        win.events.closing += _on_closing
-        webview.start(gui="edgechromium")
-    except Exception:
+        win.events.shown += _on_shown
+
+        if is_smoke_gui:
+            def _smoke_runner():
+                # Wait for real HTML + JS bootstrap to finish inside Edge WebView2!
+                deadline = time.time() + 12.0
+                rendered_title = ""
+                has_wizard = False
+                while time.time() < deadline:
+                    try:
+                        rendered_title = win.evaluate_js("document.title") or ""
+                        has_wizard = bool(win.evaluate_js("!!document.getElementById('topVersionBadge') && document.getElementById('topVersionBadge').textContent.includes('v')"))
+                        if rendered_title and has_wizard:
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(0.25)
+
+                out_path = os.environ.get("VIDEOSTUDIO_SMOKE_GUI_FILE")
+                if out_path and rendered_title and has_wizard:
+                    Path(out_path).write_text(
+                        f"SMOKE_GUI_OK title={rendered_title} icon={ico_path is not None}",
+                        encoding="utf-8",
+                    )
+                time.sleep(0.3)
+                win.destroy()
+
+            webview_storage = get_appdata_dir() / "webview_cache"
+            webview_storage.mkdir(parents=True, exist_ok=True)
+            webview.start(
+                func=_smoke_runner,
+                gui="edgechromium",
+                private_mode=False,
+                storage_path=str(webview_storage),
+                icon=str(ico_path) if ico_path else None,
+            )
+            return 0
+
+        webview_storage = get_appdata_dir() / "webview_cache"
+        webview_storage.mkdir(parents=True, exist_ok=True)
+        webview.start(
+            gui="edgechromium",
+            private_mode=False,
+            storage_path=str(webview_storage),
+            icon=str(ico_path) if ico_path else None,
+        )
+    except Exception as e:
+        if is_smoke_gui:
+            raise RuntimeError(f"Fallo al abrir ventana nativa Edge WebView2: {e}") from e
         webbrowser.open(url)
         try:
             while srv_thread.is_alive():

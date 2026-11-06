@@ -1,13 +1,5 @@
 ; ============================================================================
 ; VideoStudio Pro — Inno Setup 6 Offline All-in-One Installer Script
-; Compiles into: Output\VideoStudio-Setup-v{#MyAppVersion}.exe
-; Includes:
-;   - VideoStudio.exe (Native WebView2 Desktop + Antigravity Multi-IA SDK)
-;   - Offline bin\ffmpeg.exe + bin\ffprobe.exe (NVENC + libass)
-;   - Full CLI Factory Engine (cli_engine\scripts + .agents)
-; Safe 1-Click Upgrades:
-;   - Installs into %LOCALAPPDATA%\Programs\VideoStudio (zero UAC friction)
-;   - Never touches user data/API keys/channels in %APPDATA%\VideoStudio
 ; ============================================================================
 
 #ifndef MyAppVersion
@@ -15,7 +7,7 @@
 #endif
 
 #define MyAppName "VideoStudio Pro"
-#define MyAppPublisher "VideoStudio Faceless Factory"
+#define MyAppPublisher "VideoStudio Pro"
 #define MyAppURL "https://github.com/sephirods/VideoStudio-Windows-Installer"
 #define MyAppExeName "VideoStudio.exe"
 
@@ -43,7 +35,9 @@ SolidCompression=yes
 CloseApplications=yes
 CloseApplicationsFilter=*.exe
 RestartApplications=yes
-UninstallDisplayIcon={app}\{#MyAppExeName}
+ChangesAssociations=yes
+UninstallDisplayName={#MyAppName}
+UninstallDisplayIcon={app}\videostudio.ico
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
@@ -55,6 +49,11 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
+; 0. Explicit root & assets icon so Windows Shortcuts, Taskbar & Uninstaller NEVER lose the icon!
+Source: "..\assets\videostudio.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\assets\videostudio.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
+Source: "..\assets\videostudio_preview.png"; DestDir: "{app}\assets"; Flags: ignoreversion
+
 ; 1. Compiled Desktop Studio + Python Runtime + Antigravity localharness.exe
 Source: "..\dist\VideoStudio\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
@@ -65,9 +64,9 @@ Source: "..\build\staging\bin\*"; DestDir: "{app}\bin"; Flags: ignoreversion rec
 Source: "..\build\staging\cli_engine\*"; DestDir: "{app}\cli_engine"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\videostudio.ico"
-Name: "{group}\Desinstalar {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\videostudio.ico"; Tasks: desktopicon
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\videostudio.ico"; IconIndex: 0; Comment: "Abrir VideoStudio Pro"
+Name: "{group}\Desinstalar {#MyAppName}"; Filename: "{uninstallexe}"; IconFilename: "{app}\videostudio.ico"; IconIndex: 0
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\videostudio.ico"; IconIndex: 0; Comment: "Abrir VideoStudio Pro"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
