@@ -280,7 +280,7 @@ class VideoStudioWindowsTestSuite(unittest.TestCase):
             r = client.get("/api/bootstrap")
             self.assertEqual(r.status_code, 200)
             boot = r.json()
-            self.assertEqual(boot["version"]["version"], "1.0.6")
+            self.assertEqual(boot["version"]["version"], "1.0.7")
             self.assertEqual(len(boot["voices"]), 8)
 
             # Save channel via Wizard endpoint
@@ -426,6 +426,35 @@ class VideoStudioWindowsTestSuite(unittest.TestCase):
             reused = [s for s in tl if s.get("zoom_factor", 1.0) > 1.01]
             self.assertGreaterEqual(len(reused), 1)
             self.assertGreater(reused[0]["ss"], 0.0)
+
+
+
+    def test_09_even_visual_beats_and_gallery_normalization(self) -> None:
+        from src.backend.pipeline_runner import _normalize_visual_beats
+        from src.backend.api import api_gallery
+        import asyncio
+
+        # 1. Test balanced sentence splitting
+        script_data = {
+            "topic": "El hongo Ophiocordyceps y las hormigas",
+            "video_terms_csv": "zombie ant macro, cordyceps jungle, spores microscope",
+            "full_script": "S1. S2. S3. S4. S5. S6. S7. S8. S9. S10. S11.",
+        }
+        beats = _normalize_visual_beats(script_data)
+        self.assertEqual(len(beats), 5)
+        word_counts = [len(b["narration"].split()) for b in beats]
+        self.assertLessEqual(max(word_counts) - min(word_counts), 2)
+        for b in beats:
+            self.assertGreaterEqual(len(b["search_terms"]), 1)
+            self.assertTrue(any(t in "zombie ant macro, cordyceps jungle, spores microscope" for t in b["search_terms"]))
+
+        # 2. Test gallery channel normalization
+        gal = asyncio.run(api_gallery())
+        self.assertIn("videos", gal)
+        for v in gal["videos"]:
+            self.assertNotEqual(v["channel"], "piloto_demo")
+            if "piloto" in v["channel"].lower():
+                self.assertEqual(v["channel"], "⚡ Modo libre / Piloto")
 
 
 if __name__ == "__main__":

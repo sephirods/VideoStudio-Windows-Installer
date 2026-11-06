@@ -520,8 +520,10 @@ async def api_gallery() -> dict[str, Any]:
                     dur = qa_json.get("measured_duration_seconds") or (qa_json.get("technical_probe") or {}).get("duration")
                 except Exception:
                     pass
+            ch_raw = man.get("channel") or pdir.parent.name
+            ch_clean = "⚡ Modo libre / Piloto" if ch_raw in ("piloto_demo", "default", None, "") else ch_raw
             items.append({
-                "channel": man.get("channel") or pdir.parent.name,
+                "channel": ch_clean,
                 "slug": man.get("slug") or pdir.name,
                 "folder": str(pdir),
                 "packaged_at": man.get("packaged_at") or datetime.fromtimestamp(manifest_file.stat().st_mtime).isoformat(),
@@ -568,8 +570,10 @@ async def api_gallery() -> dict[str, Any]:
                 except Exception:
                     pass
                 if days_left > 0:
+                    raw_c = entry.get("channel") or entry.get("channel_id", "")
+                    clean_c = "⚡ Modo libre / Piloto" if raw_c in ("piloto_demo", "default", None, "") else raw_c
                     cooldown_items.append({
-                        "channel": entry.get("channel") or entry.get("channel_id", ""),
+                        "channel": clean_c,
                         "group": entry.get("group", ""),
                         "topic": entry.get("topic", ""),
                         "image_dhash": entry.get("image_hash", ""),

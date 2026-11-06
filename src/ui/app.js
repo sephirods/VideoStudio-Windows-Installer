@@ -81,8 +81,8 @@ async function initApp() {
 
   await refreshBootstrap();
   renderPipelineStagesIdle();
-  await refreshModelScan(false);
   await refreshGallery();
+  await refreshModelScan(false);
   pollPipeline();
 }
 
@@ -1488,25 +1488,30 @@ window.approveCopilotPhoto = async function (idx) {
 };
 
 /* ==================== GALLERY & 30-DAY PROTECTION ==================== */
+function normalizeChannel(ch) {
+  if (!ch || ch === "piloto_demo" || ch === "default") return "⚡ Modo libre / Piloto";
+  return ch;
+}
+
 function populateGalleryChannelFilter(vids, cools) {
   const filterSel = document.getElementById("galleryChannelFilter");
   if (!filterSel) return;
   const currentVal = filterSel.value;
   const counts = {};
   vids.forEach((v) => {
-    const ch = v.channel || "⚡ Modo libre / Piloto";
+    const ch = normalizeChannel(v.channel);
     counts[ch] = (counts[ch] || 0) + 1;
   });
 
   // Also include channels that exist in cooldown or channels config even if 0 videos
   (cools || []).forEach((c) => {
-    const ch = c.channel || c.group || "⚡ Modo libre / Piloto";
+    const ch = normalizeChannel(c.channel || c.group);
     if (counts[ch] === undefined) {
       counts[ch] = 0;
     }
   });
   (state.bootstrap?.channels || []).forEach((c) => {
-    const ch = c.name || c.id;
+    const ch = normalizeChannel(c.name || c.id);
     if (counts[ch] === undefined) {
       counts[ch] = 0;
     }
@@ -1525,13 +1530,13 @@ function populateGalleryChannelFilter(vids, cools) {
 function renderFilteredGallery() {
   const vGrid = document.getElementById("galleryVideosGrid");
   const filterSel = document.getElementById("galleryChannelFilter");
-  const selectedChannel = filterSel ? filterSel.value : "";
+  const selectedChannel = (filterSel ? filterSel.value : "").trim();
   const allVids = window._galleryVideos || [];
   const allCools = window._galleryCooldown || [];
 
   // 1. Filter videos grid
   const filteredVids = selectedChannel
-    ? allVids.filter((v) => (v.channel || "⚡ Modo libre / Piloto") === selectedChannel)
+    ? allVids.filter((v) => normalizeChannel(v.channel) === selectedChannel)
     : allVids;
 
   if (!filteredVids.length) {
@@ -1543,10 +1548,11 @@ function renderFilteredGallery() {
   } else {
     vGrid.innerHTML = filteredVids.map((v) => {
       const origIdx = allVids.indexOf(v);
+      const chLabel = normalizeChannel(v.channel);
       return `
       <div class="card" style="margin:0;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-          <span class="badge badge-vision">${esc(v.channel)}</span>
+          <span class="badge badge-vision">${esc(chLabel)}</span>
           <span style="font-size:11.5px; color:#6ee7b7;">${v.duration_sec ? `${v.duration_sec} s` : "62-72 s"}</span>
         </div>
         ${v.video_path ? `<video src="${mediaUrl(v.video_path)}" controls poster="${v.thumbnail_path ? mediaUrl(v.thumbnail_path) : ""}" style="width:100%; max-height:280px; border-radius:8px; background:#000;"></video>` : ""}
@@ -1566,21 +1572,18 @@ function renderFilteredGallery() {
   const cBody = document.getElementById("cooldownTableBody");
   if (cBody) {
     const filteredCools = selectedChannel
-      ? allCools.filter((c) => {
-          const ch = c.channel || c.group || "";
-          return ch === selectedChannel || (selectedChannel === "⚡ Modo libre / Piloto" && (!ch || ch === "piloto_demo"));
-        })
+      ? allCools.filter((c) => normalizeChannel(c.channel || c.group) === selectedChannel)
       : allCools;
 
     cBody.innerHTML = filteredCools.length
       ? filteredCools.map((c) => `
           <tr>
             <td><strong>${esc(c.group || c.channel || "—")}</strong></td>
-            <td>${esc(c.channel || c.group || "—")}</td>
+            <td>${esc(normalizeChannel(c.channel || c.group))}</td>
             <td>${esc(c.topic)}</td>
             <td><span class="badge badge-paid">Protegido por ${c.days_remaining} días más</span></td>
             <td style="text-align:right;">
-              <button class="btn btn-sm" style="padding:2px 8px; font-size:11px; color:#f87171; border-color:rgba(239,68,68,0.3); background:rgba(239,68,68,0.06);" onclick="unblockTopic('${esc(c.topic.replace(/'/g, "\\'"))}')" title="Desbloquear este tema para volver a usarlo">✕ Liberar</button>
+              <button class="btn btn-sm" style="padding:2px 8px; font-size:11px; color:#f87171; border-color:rgba(239,68,68,0.3); background:rgba(239,68,68,0.06);" onclick="unblockTopic('${esc(c.topic.replace(/'/g, "\\\'"))}')" title="Desbloquear este tema para volver a usarlo">✕ Liberar</button>
             </td>
           </tr>
         `).join("")
@@ -1589,13 +1592,22 @@ function renderFilteredGallery() {
 }
 
 async function refreshGallery() {
-  const res = await api("/api/gallery");
-  renderCacheBar(res.cache);
+  const btn = document.getElementById("btnRefreshGallery");
+  if (btn) btn.textContent = "⏳ Cargando...";
+  try {
+    const res = await api("/api/gallery");
+    if (res.cache) renderCacheBar(res.cache);
 
-  window._galleryVideos = res.videos || [];
-  window._galleryCooldown = res.cooldown_active || [];
-  populateGalleryChannelFilter(window._galleryVideos, window._galleryCooldown);
-  renderFilteredGallery();
+    window._galleryVideos = res.videos || [];
+    window._galleryCooldown = res.cooldown_active || [];
+    populateGalleryChannelFilter(window._galleryVideos, window._galleryCooldown);
+    renderFilteredGallery();
+  } catch (err) {
+    console.error("Error refreshing gallery:", err);
+    toast("No se pudo cargar la biblioteca. Verificando conexión...");
+  } finally {
+    if (btn) btn.textContent = "↻ Actualizar lista";
+  }
 }
 
 window.unblockTopic = async function (topic) {

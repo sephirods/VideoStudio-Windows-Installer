@@ -959,7 +959,7 @@ async def _hunt_verified_real_photo(
 
 
 def _normalize_visual_beats(script_data: dict) -> list[dict]:
-    """Returns 5 ordered beats {beat, narration, search_terms}; rebuilds them from the script if the model omitted them."""
+    """Returns 5 ordered beats {beat, narration, search_terms}; rebuilds them evenly from the script if the model omitted them."""
     beats_raw = script_data.get("visual_beats")
     beats: list[dict] = []
     if isinstance(beats_raw, list):
@@ -973,18 +973,31 @@ def _normalize_visual_beats(script_data: dict) -> list[dict]:
     if len(beats) >= 3:
         return beats
 
-    # Fallback: split the script into 5 sentence groups and spread video_terms_csv across them in order
+    # Fallback: split the script evenly into 5 balanced sentence groups
     sentences = [s.strip() for s in re.split(r"(?<=[.!?¿¡])\s+", script_data.get("full_script", "")) if s.strip()]
     terms_all = [t.strip() for t in str(script_data.get("video_terms_csv", "")).split(",") if t.strip()]
     if not terms_all:
-        terms_all = ["cinematic documentary footage"]
+        terms_all = [script_data.get("topic", "cinematic footage")]
+
     n = 5
-    per = max(1, len(sentences) // n) if sentences else 1
+    if len(sentences) >= n:
+        k, m = divmod(len(sentences), n)
+        chunks = [sentences[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n)]
+    else:
+        chunks = [[s] for s in sentences]
+        while len(chunks) < n:
+            chunks.append([script_data.get("topic", "")])
+
     beats = []
-    for i in range(n):
-        chunk = sentences[i * per:(i + 1) * per] if i < n - 1 else sentences[i * per:]
-        t_chunk = terms_all[i::n] or [terms_all[i % len(terms_all)]]
-        beats.append({"beat": i + 1, "narration": " ".join(chunk) or script_data.get("topic", ""), "search_terms": t_chunk[:4]})
+    for i, chunk in enumerate(chunks):
+        t1 = terms_all[i % len(terms_all)]
+        t2 = terms_all[(i + 1) % len(terms_all)] if len(terms_all) > 1 else t1
+        t_chunk = [t1, t2] if t1 != t2 else [t1]
+        beats.append({
+            "beat": i + 1,
+            "narration": " ".join(chunk).strip() or script_data.get("topic", ""),
+            "search_terms": t_chunk[:3],
+        })
     return beats
 
 
@@ -1149,7 +1162,7 @@ async def _collect_beat_clips(
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0), follow_redirects=True) as client:
         for b in beats:
-            need = max(2, round(total_slots * len(b["narration"].split()) / total_words))
+            need = min(3, max(2, round(total_slots * len(b["narration"].split()) / total_words)))
             approved: list[tuple[dict, Path]] = []
             leftovers: list[tuple[dict, Path]] = []
             seen_ids: set[str] = set()
@@ -1249,35 +1262,28 @@ async def _collect_beat_clips(
                 approved.extend(take)
             chosen = approved[:need]
 
-            # Semantic safety fallback for starved beats: ensures every beat has at least 2 unique clips
-            if len(chosen) < need:
-                topic_q = str(script_data.get("topic", "")).split(":")[0].strip()
-                niche_q = str(script_data.get("niche", "")).strip()
-                b_terms = b.get("search_terms") or []
-                fb_candidates = [
-                    f"{b_terms[0]} cinematic" if b_terms else "",
-                    f"{topic_q} documentary"[:45] if topic_q else "",
-                    f"{niche_q} cinematic"[:40] if niche_q else "",
-                    "cinematic underwater dark ocean" if any(w in topic_q.lower() for w in ("ocean", "mar", "agua", "sound", "bloop")) else "cinematic documentary 4k footage",
-                ]
-                fb_terms = [t for t in fb_candidates if t and t.lower() not in tried_terms]
-                if fb_terms:
-                    tried_terms.update(t.lower() for t in fb_terms)
-                    progress(f"Escena {b['beat']}/{len(beats)} · Búsqueda de respaldo temático...")
-                    fb_res = [await _search_stock_videos(client, t, pix_key, pex_key, search_cache) for t in fb_terms[:2]]
-                    fb_fresh = [c for c in _interleave_by_term(fb_res) if c["id"] not in seen_ids and c["id"] not in used_ids]
-                    missing = need - len(chosen)
-                    fb_batch = fb_fresh[:max(2, missing)]
-                    if fb_batch:
-                        async def _dl_fb(i: int, cand: dict) -> tuple[dict, Path] | None:
-                            async with sem:
-                                dest = broll_dir / f"b{b['beat']}_fb_{i:02d}_{cand['id']}.mp4"
-                                p = await _download_stock_clip(client, cand, cache_dir, dest)
-                                return (cand, p) if p else None
-                        dl_fb = [x for x in await asyncio.gather(*[_dl_fb(i, c) for i, c in enumerate(fb_batch, 1)]) if x]
-                        if dl_fb:
-                            chosen.extend(dl_fb[:missing])
-                            filled_from_leftovers += len(dl_fb[:missing])
+            # Beat fulfillment: if chosen has >= 1 on-topic clip, the beat is satisfied;
+            # intelligent intra-beat reuse will cut it dynamically across duration with alternating zoom/offsets.
+            # Only if the beat has ZERO clips, borrow from leftovers or search remaining topic terms.
+            if len(chosen) == 0:
+                if leftovers:
+                    take = leftovers.pop(0)
+                    chosen.append(take)
+                    filled_from_leftovers += 1
+                else:
+                    all_topic_terms = [t.strip() for t in str(script_data.get("video_terms_csv", "")).split(",") if t.strip()]
+                    rem_terms = [t for t in all_topic_terms if t.lower() not in tried_terms]
+                    if rem_terms:
+                        tried_terms.add(rem_terms[0].lower())
+                        fb_res = await _search_stock_videos(client, rem_terms[0], pix_key, pex_key, search_cache)
+                        fb_fresh = [c for c in fb_res if c["id"] not in seen_ids and c["id"] not in used_ids]
+                        if fb_fresh:
+                            cand = fb_fresh[0]
+                            dest = broll_dir / f"b{b['beat']}_topic_{cand['id']}.mp4"
+                            p = await _download_stock_clip(client, cand, cache_dir, dest)
+                            if p:
+                                chosen.append((cand, p))
+                                filled_from_leftovers += 1
 
             for cand, _ in chosen:
                 used_ids.add(cand["id"])
