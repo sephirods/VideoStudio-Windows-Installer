@@ -381,6 +381,52 @@ class VideoStudioWindowsTestSuite(unittest.TestCase):
         self.assertEqual(st_done["stages"][0]["status"], "done")
         self.assertEqual(st_done["stages"][0]["elapsed_sec"], 2.45)
 
+    def test_08_beat_synchronized_timeline_and_intelligent_reuse(self) -> None:
+        import sys
+        from pathlib import Path
+        cli_scripts = str(Path(r"C:\VideoStudio\cli\scripts").resolve())
+        if cli_scripts not in sys.path:
+            sys.path.insert(0, cli_scripts)
+        from run_pipeline_job import _build_sequential_timeline
+
+        # Create temporary dummy video files to satisfy os.path.exists
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            c1 = os.path.join(tmp_dir, "clip_b1.mp4")
+            c2 = os.path.join(tmp_dir, "clip_b2.mp4")
+            for p in (c1, c2):
+                with open(p, "wb") as f:
+                    f.write(b"0" * 1024)
+
+            beats_data = [
+                {"beat": 1, "narration": "First beat opening hook words.", "clips": [c1]},
+                {"beat": 2, "narration": "Second beat explanation details with more words spoken.", "clips": [c2]},
+            ]
+            clip_durations = {c1: 30.0, c2: 25.0}
+            target_duration = 20.0
+
+            tl = _build_sequential_timeline(
+                valid_clips=[c1, c2],
+                clip_durations=clip_durations,
+                target_duration=target_duration,
+                beats_data=beats_data,
+            )
+
+            # 1) Exact duration match
+            total_dur = sum(s["duration"] for s in tl)
+            self.assertAlmostEqual(total_dur, target_duration, places=2)
+
+            # 2) Strict beat isolation (Clip 1 only in Beat 0, Clip 2 only in Beat 1)
+            for seg in tl:
+                if seg.get("beat_idx") == 0:
+                    self.assertEqual(seg["clip_path"], os.path.abspath(c1))
+                elif seg.get("beat_idx") == 1:
+                    self.assertEqual(seg["clip_path"], os.path.abspath(c2))
+
+            # 3) Intelligent reuse applied when cuts > 1 (zoom_factor 1.12 on reused cut)
+            reused = [s for s in tl if s.get("zoom_factor", 1.0) > 1.01]
+            self.assertGreaterEqual(len(reused), 1)
+            self.assertGreater(reused[0]["ss"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

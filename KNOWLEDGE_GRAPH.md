@@ -62,6 +62,7 @@ flowchart TD
 - `renderFilteredGallery()`: Filtrado simultáneo de tarjetas de video y tabla de 30 días según el canal seleccionado.
 - `openImageLightbox(src, title)` / `closeImageLightbox()`: Visor modal en alta resolución con soporte de tecla `Esc`.
 - `unblockTopic(topic)` / `purgeOrphanCooldowns()`: Control interactivo de la protección de 30 días.
+- `_build_sequential_timeline()` / `_collect_beat_clips()`: Montaje sincronizado compás por compás (Beat-Synchronized) con reutilización inteligente (offset temporal `ss` no solapado + punch-in zoom 1.12x dentro de la misma escena) y búsqueda semántica de respaldo.
 
 ---
 

@@ -1248,6 +1248,37 @@ async def _collect_beat_clips(
                 filled_from_leftovers = len(take)
                 approved.extend(take)
             chosen = approved[:need]
+
+            # Semantic safety fallback for starved beats: ensures every beat has at least 2 unique clips
+            if len(chosen) < need:
+                topic_q = str(script_data.get("topic", "")).split(":")[0].strip()
+                niche_q = str(script_data.get("niche", "")).strip()
+                b_terms = b.get("search_terms") or []
+                fb_candidates = [
+                    f"{b_terms[0]} cinematic" if b_terms else "",
+                    f"{topic_q} documentary"[:45] if topic_q else "",
+                    f"{niche_q} cinematic"[:40] if niche_q else "",
+                    "cinematic underwater dark ocean" if any(w in topic_q.lower() for w in ("ocean", "mar", "agua", "sound", "bloop")) else "cinematic documentary 4k footage",
+                ]
+                fb_terms = [t for t in fb_candidates if t and t.lower() not in tried_terms]
+                if fb_terms:
+                    tried_terms.update(t.lower() for t in fb_terms)
+                    progress(f"Escena {b['beat']}/{len(beats)} · Búsqueda de respaldo temático...")
+                    fb_res = [await _search_stock_videos(client, t, pix_key, pex_key, search_cache) for t in fb_terms[:2]]
+                    fb_fresh = [c for c in _interleave_by_term(fb_res) if c["id"] not in seen_ids and c["id"] not in used_ids]
+                    missing = need - len(chosen)
+                    fb_batch = fb_fresh[:max(2, missing)]
+                    if fb_batch:
+                        async def _dl_fb(i: int, cand: dict) -> tuple[dict, Path] | None:
+                            async with sem:
+                                dest = broll_dir / f"b{b['beat']}_fb_{i:02d}_{cand['id']}.mp4"
+                                p = await _download_stock_clip(client, cand, cache_dir, dest)
+                                return (cand, p) if p else None
+                        dl_fb = [x for x in await asyncio.gather(*[_dl_fb(i, c) for i, c in enumerate(fb_batch, 1)]) if x]
+                        if dl_fb:
+                            chosen.extend(dl_fb[:missing])
+                            filled_from_leftovers += len(dl_fb[:missing])
+
             for cand, _ in chosen:
                 used_ids.add(cand["id"])
             beat_results.append({
