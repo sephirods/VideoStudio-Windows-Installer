@@ -14,7 +14,7 @@
       <img src="/logo.png" class="brand-logo-img" alt="VideoStudio Pro" />
       <div class="brand-meta">
         <span class="brand-title">VideoStudio Pro</span>
-        <span id="topVersionBadge" class="version-pill">v1.0.0</span>
+        <span id="topVersionBadge" class="version-pill">v1.0.4</span>
         <span class="sdk-pill" title="Impulsado por Google Antigravity SDK + Enrutador Universal Multi-IA">Antigravity IA</span>
       </div>
     </div>
@@ -22,7 +22,7 @@
     <!-- Barra Superior de Versión y Actualización en 1 Clic -->
     <div class="updater-bar" id="updaterWidget" title="Comprueba automáticamente si hay una nueva versión lista para instalar en 1 clic">
       <span id="updaterDot" class="updater-dot"></span>
-      <span id="updaterText">Versión v1.0.0 · Al día</span>
+      <span id="updaterText">Versión v1.0.4 · Al día</span>
       <button id="btnCheckUpdates" class="btn-icon" title="Buscar actualizaciones ahora">↻</button>
       <button id="btnOneClickUpdate" class="btn-update-cta" style="display:none;">
         Actualizar e instalar en 1 clic
@@ -130,22 +130,26 @@
           <div id="stagesGrid" class="stages-grid"></div>
         </div>
 
-        <!-- Visores Instantáneos -->
+        <!-- Visores de Entregables Clave -->
         <div class="preview-strip">
           <div class="preview-box">
-            <div class="preview-title">1. Fotos reales candidatas</div>
-            <div id="prevGridWrap" class="preview-empty">Se mostrará al iniciar</div>
+            <div class="preview-title">1. Tendencia seleccionada</div>
+            <div id="prevTrendWrap" class="preview-empty">Se mostrará al iniciar</div>
           </div>
           <div class="preview-box">
-            <div class="preview-title">2. Escenas de apoyo</div>
-            <div id="prevMosaicWrap" class="preview-empty">Se mostrará al iniciar</div>
+            <div class="preview-title">2. Guión Viral</div>
+            <div id="prevScriptWrap" class="preview-empty">Se mostrará al iniciar</div>
           </div>
           <div class="preview-box">
-            <div class="preview-title">3. Revisión de calidad (5 capturas)</div>
-            <div id="prevQaWrap" class="preview-empty">Se mostrará al iniciar</div>
+            <div class="preview-title">3. Título, Descripción y Tags</div>
+            <div id="prevSeoWrap" class="preview-empty">Se mostrará al iniciar</div>
           </div>
           <div class="preview-box">
-            <div class="preview-title">4. Portada y video terminado</div>
+            <div class="preview-title">4. Portada viral (Miniatura)</div>
+            <div id="prevThumbWrap" class="preview-empty">Se mostrará al finalizar</div>
+          </div>
+          <div class="preview-box">
+            <div class="preview-title">5. Video terminado</div>
             <div id="prevFinalWrap" class="preview-empty">Se mostrará al finalizar</div>
           </div>
         </div>
@@ -202,19 +206,26 @@
           <div id="modelWarningsBox" class="warnings-box"></div>
         </div>
 
-        <!-- Selector Granular por Etapa -->
-        <div class="card">
+        <!-- Selector Granular por Etapa con Buscador de Texto -->
+        <div class="card" style="overflow:visible;">
           <div class="table-head-bar">
             <div>
               <h3 class="card-heading" style="margin-bottom:2px;">Personalización manual por etapa</h3>
-              <p style="font-size:12px; color:var(--text-muted);">Puedes elegir manualmente qué modelo exacto trabaja en cada una de las 9 fases.</p>
+              <p style="font-size:12px; color:var(--text-muted);">Haz clic en cualquier etapa y escribe en el buscador para filtrar entre decenas de modelos al instante.</p>
             </div>
-            <select id="modelFilterSelect" style="width:230px;">
-              <option value="all">Ver todos los modelos</option>
-              <option value="free">Solo modelos gratuitos ($0)</option>
-              <option value="vision">Solo modelos con visión</option>
-            </select>
+            <div class="models-filter-controls">
+              <div class="search-input-wrap">
+                <input type="text" id="modelSearchInput" placeholder="🔎 Buscar modelo (ej: free-stack, claude)..." autocomplete="off" />
+                <button type="button" id="btnClearModelSearch" class="search-clear-btn" style="display:none;" title="Limpiar filtro">✕</button>
+              </div>
+              <select id="modelFilterSelect" style="width:178px;">
+                <option value="all">Todos los modelos</option>
+                <option value="free">Solo gratuitos ($0)</option>
+                <option value="vision">Solo con visión</option>
+              </select>
+            </div>
           </div>
+          <div id="globalQuickSearchMatches" style="display:none; margin-bottom:12px;"></div>
           <table class="stage-table">
             <thead>
               <tr>
@@ -248,7 +259,10 @@
             <h1 class="section-title">Biblioteca de Videos Creados</h1>
             <p class="section-sub">Reproduce tus videos terminados, copia el texto de publicación en 1 clic y consulta los temas protegidos para no repetir contenido.</p>
           </div>
-          <button id="btnRefreshGallery" class="btn">↻ Actualizar lista</button>
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <select id="galleryChannelFilter" class="channel-top-select" style="min-width:180px; padding:6px 12px;" title="Filtrar videos por canal"></select>
+            <button id="btnRefreshGallery" class="btn">↻ Actualizar lista</button>
+          </div>
         </div>
 
         <div id="galleryVideosGrid" class="grid-3"></div>
@@ -380,13 +394,19 @@
 
           <div id="wizProvidersContainer" class="grid-2" style="margin-bottom:14px;"></div>
 
-          <div class="card" style="margin-bottom:0; padding:14px 16px;">
+          <div class="card" style="margin-bottom:0; padding:14px 16px; overflow:visible;">
             <label class="field-label" for="wizProfileSelect">¿Cómo prefieres que elijamos el modelo de IA para cada etapa del video?</label>
             <select id="wizProfileSelect">
               <option value="balanced">Equilibrado Recomendado — Usa modelos gratis en tareas rápidas y los mejores en guión y visión</option>
               <option value="free">100% Gratis ($0.00 por video) — Utiliza solo modelos gratuitos detectados en tu cuenta</option>
               <option value="pro">Máxima Calidad Pro — Usa el modelo más potente disponible en todas las fases</option>
+              <option value="custom">🔎 Elegir un modelo específico buscándolo por nombre...</option>
             </select>
+            <div id="wizCustomModelWrap" style="display:none; margin-top:10px;">
+              <label class="field-label" for="wizModelSearchInput">Escribe el nombre del modelo para aplicarlo a todas las etapas compatibles</label>
+              <input type="text" id="wizModelSearchInput" placeholder="🔎 Escribe aquí (ej: free-stack, claude-sonnet, gemini)..." autocomplete="off" />
+              <div id="wizModelSearchResults" class="wiz-search-results"></div>
+            </div>
           </div>
         </div>
 
@@ -525,6 +545,19 @@
           <button id="btnWizardPrev" class="btn" style="display:none;">← Paso anterior</button>
           <button id="btnWizardNext" class="btn btn-primary">Continuar →</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal para ver miniatura en grande (Alta resolución) -->
+  <div id="imageLightboxBackdrop" class="image-lightbox-backdrop" onclick="closeImageLightbox(event)">
+    <div class="image-lightbox-container">
+      <div class="image-lightbox-head">
+        <span id="lightboxTitle" style="font-weight:700; color:#fff; font-size:13.5px;">Portada viral (Alta resolución)</span>
+        <button class="btn btn-sm" onclick="closeImageLightbox()">✕ Cerrar</button>
+      </div>
+      <div class="image-lightbox-body">
+        <img id="lightboxImg" src="" alt="Portada viral en grande" />
       </div>
     </div>
   </div>

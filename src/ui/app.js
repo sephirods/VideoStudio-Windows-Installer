@@ -6,6 +6,8 @@ const state = {
   activeProfile: "balanced",
   productionMode: "auto",
   stageOverrides: {},
+  globalModelQuery: "",
+  _stagePools: {},
   wizardStep: 1,
   selectedVoice: "es-MX-JorgeNeural",
   savedWizardChannelId: null,
@@ -139,7 +141,7 @@ function bindNavigation() {
 
 function renderCacheBar(cache) {
   if (!cache) return;
-  document.getElementById("sidebarCacheText").textContent = `${cache.used_mb} / ${cache.cap_mb} MB`;
+  document.getElementById("sidebarCacheText").textContent = `${Math.round(cache.used_mb || 0)} / ${cache.cap_mb} MB`;
   document.getElementById("sidebarCacheBar").style.width = `${Math.min(100, cache.percent)}%`;
 }
 
@@ -343,9 +345,27 @@ async function refreshModelScan(force = false) {
   renderModelRecommendationsUI();
 }
 
+function modelMatchesQuery(m, rawQuery) {
+  const q = (rawQuery || "").trim().toLowerCase();
+  if (!q) return true;
+  const hay = [
+    m.provider_label,
+    m.provider,
+    m.display_name,
+    m.model_id,
+    m.free_note,
+    m.is_free ? "gratis free $0 0" : "pago paid",
+    m.supports_vision ? "vision visión multimodal" : "texto",
+  ].join(" ").toLowerCase();
+  return q.split(/\s+/).every((tok) => hay.includes(tok));
+}
+
 function renderModelRecommendationsUI() {
   const scan = state.scan || { free_models_count: 0, paid_models_count: 0, vision_models_count: 0, models: [] };
   const recs = state.recommendations || { stages: [], profiles: { free: {}, balanced: {}, pro: {} }, estimated_cost_usd_per_video: {}, warnings: [] };
+  const allModels = scan.models || [];
+  const byKey = {};
+  allModels.forEach((m) => { byKey[m.key] = m; });
 
   const badgeTxt = `${scan.free_models_count} Gratis · ${scan.paid_models_count} de Pago · ${scan.vision_models_count} con Visión`;
   document.getElementById("scanCountersBadge").textContent = badgeTxt;
@@ -372,6 +392,13 @@ function renderModelRecommendationsUI() {
     };
   });
 
+  const wizProfEl = document.getElementById("wizProfileSelect");
+  if (wizProfEl && ["balanced", "free", "pro", "custom"].includes(state.activeProfile)) {
+    wizProfEl.value = state.activeProfile;
+    const wWrap = document.getElementById("wizCustomModelWrap");
+    if (wWrap) wWrap.style.display = state.activeProfile === "custom" ? "block" : "none";
+  }
+
   document.getElementById("modelWarningsBox").textContent = (recs.warnings || []).join(" · ");
 
   const filterMode = document.getElementById("modelFilterSelect").value;
@@ -379,45 +406,301 @@ function renderModelRecommendationsUI() {
     ? { ...(recs.profiles.balanced || {}), ...state.stageOverrides }
     : (recs.profiles[state.activeProfile] || {});
 
+  state._stagePools = {};
   const tbody = document.getElementById("stageModelsTableBody");
   tbody.innerHTML = (recs.stages || []).map((st) => {
-    const pool = (scan.models || []).filter((m) => {
+    const pool = allModels.filter((m) => {
       if (st.requires_vision && !m.supports_vision) return false;
       if (filterMode === "free" && !m.is_free) return false;
       if (filterMode === "vision" && !m.supports_vision) return false;
       return true;
     });
-    const selectedKey = activeMap[st.id] || "";
-    const opts = pool.length
-      ? pool.map((m) => {
-          const priceTag = m.is_free ? "GRATIS" : m.free_note;
-          const visTag = m.supports_vision ? " · Con Visión" : "";
-          return `<option value="${esc(m.key)}" ${m.key === selectedKey ? "selected" : ""}>[${esc(m.provider_label)}] ${esc(m.display_name)} — ${priceTag}${visTag}</option>`;
-        }).join("")
-      : `<option value="">Conecta arriba un proveedor${st.requires_vision ? " con visión" : ""}</option>`;
+    state._stagePools[st.id] = { pool, selectedKey: activeMap[st.id] || "", requiresVision: !!st.requires_vision };
+
+    const selectedModel = byKey[activeMap[st.id]] || pool.find((x) => x.key === activeMap[st.id]) || null;
+    let triggerInner = "";
+    if (selectedModel) {
+      const priceBadge = selectedModel.is_free
+        ? '<span class="badge badge-free">GRATIS</span>'
+        : `<span class="badge badge-paid">${esc(selectedModel.free_note || "Pago")}</span>`;
+      const visBadge = selectedModel.supports_vision ? '<span class="badge badge-vision">Visión</span>' : "";
+      triggerInner = `
+        <span class="model-combo-label">[${esc(selectedModel.provider_label)}] ${esc(selectedModel.display_name)}</span>
+        <span class="model-combo-meta">${priceBadge}${visBadge}<span class="model-combo-chevron">▾</span></span>
+      `;
+    } else {
+      triggerInner = `
+        <span class="model-combo-label" style="color:var(--text-muted);">Conecta arriba un proveedor${st.requires_vision ? " con visión" : ""}</span>
+        <span class="model-combo-chevron">▾</span>
+      `;
+    }
 
     return `
       <tr>
         <td><strong>${esc(st.name)}</strong><div style="font-size:11.5px; color:var(--text-dim);">${esc(st.role)}</div></td>
         <td>${st.requires_vision ? '<span class="badge badge-vision">Requiere Visión</span>' : '<span class="badge badge-free">Texto rápido</span>'}</td>
-        <td>
-          <select onchange="overrideStageModel('${st.id}', this.value)">${opts}</select>
+        <td class="stage-model-cell">
+          <div class="model-combo" id="combo_${esc(st.id)}" data-stage="${esc(st.id)}">
+            <button type="button" class="model-combo-trigger" onclick="toggleStageCombo('${esc(st.id)}', event)">
+              ${triggerInner}
+            </button>
+            <div class="model-combo-dropdown" onclick="event.stopPropagation()">
+              <div class="model-combo-search-bar">
+                <input
+                  type="text"
+                  id="comboInput_${esc(st.id)}"
+                  placeholder="🔎 Escribe para buscar modelo (ej: free-stack, opus, gemini)..."
+                  autocomplete="off"
+                  oninput="filterStageCombo('${esc(st.id)}', this.value)"
+                  onkeydown="handleComboKeydown('${esc(st.id)}', event)"
+                />
+                <span class="model-combo-count" id="comboCount_${esc(st.id)}">0</span>
+              </div>
+              <div class="model-combo-list" id="comboList_${esc(st.id)}"></div>
+            </div>
+          </div>
         </td>
         <td style="font-size:12px; color:var(--text-muted);">${esc(st.reason_hint)}</td>
       </tr>
     `;
   }).join("");
+
+  renderGlobalQuickMatches();
+  renderWizardModelSearchResults();
+}
+
+function renderStageComboItems(stageId, queryStr) {
+  const info = state._stagePools[stageId];
+  const listEl = document.getElementById(`comboList_${stageId}`);
+  const countEl = document.getElementById(`comboCount_${stageId}`);
+  if (!info || !listEl || !countEl) return;
+
+  const filtered = info.pool.filter((m) => modelMatchesQuery(m, queryStr));
+  info.filtered = filtered;
+  info.focusIdx = filtered.length ? 0 : -1;
+  countEl.textContent = `${filtered.length} de ${info.pool.length}`;
+
+  if (!filtered.length) {
+    listEl.innerHTML = `<div class="model-combo-empty">Ningún modelo coincide con "${esc(queryStr)}". Prueba con otro término.</div>`;
+    return;
+  }
+
+  listEl.innerHTML = filtered.map((m, idx) => {
+    const isSel = m.key === info.selectedKey;
+    const priceBadge = m.is_free
+      ? '<span class="badge badge-free">GRATIS</span>'
+      : `<span class="badge badge-paid">${esc(m.free_note || "Pago")}</span>`;
+    const visBadge = m.supports_vision ? '<span class="badge badge-vision">Visión</span>' : "";
+    const subId = m.model_id && m.model_id !== m.display_name ? `<div class="model-combo-item-sub">${esc(m.model_id)}</div>` : "";
+    return `
+      <div
+        class="model-combo-item ${isSel ? "selected" : ""} ${idx === 0 ? "focused" : ""}"
+        data-idx="${idx}"
+        onclick="overrideStageModel('${esc(stageId)}', '${esc(m.key)}')"
+      >
+        <div class="model-combo-item-left">
+          <div class="model-combo-item-title">${isSel ? "✓ " : ""}[${esc(m.provider_label)}] ${esc(m.display_name)}</div>
+          ${subId}
+        </div>
+        <div class="model-combo-item-right">
+          ${priceBadge}
+          ${visBadge}
+          <button
+            type="button"
+            class="model-apply-all-btn"
+            title="Aplicar este modelo a todas las etapas compatibles"
+            onclick="event.stopPropagation(); applyModelToAllStages('${esc(m.key)}')"
+          >En todas</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+window.closeAllStageCombos = function () {
+  document.querySelectorAll(".model-combo.open").forEach((el) => {
+    el.classList.remove("open", "flip-up");
+  });
+};
+
+window.toggleStageCombo = function (stageId, ev) {
+  if (ev) ev.stopPropagation();
+  const combo = document.getElementById(`combo_${stageId}`);
+  if (!combo) return;
+  const wasOpen = combo.classList.contains("open");
+  closeAllStageCombos();
+  if (wasOpen) return;
+
+  const rect = combo.getBoundingClientRect();
+  if (window.innerHeight - rect.bottom < 330 && rect.top > 320) {
+    combo.classList.add("flip-up");
+  }
+  combo.classList.add("open");
+
+  const inp = document.getElementById(`comboInput_${stageId}`);
+  const initialQ = state.globalModelQuery || "";
+  if (inp) inp.value = initialQ;
+  renderStageComboItems(stageId, initialQ);
+  if (inp) {
+    setTimeout(() => {
+      inp.focus();
+      inp.select();
+    }, 15);
+  }
+};
+
+window.filterStageCombo = function (stageId, val) {
+  renderStageComboItems(stageId, val);
+};
+
+window.handleComboKeydown = function (stageId, ev) {
+  const info = state._stagePools[stageId];
+  if (!info || !info.filtered) return;
+  const listEl = document.getElementById(`comboList_${stageId}`);
+  const len = info.filtered.length;
+
+  if (ev.key === "Escape") {
+    ev.preventDefault();
+    closeAllStageCombos();
+    return;
+  }
+  if (!len) return;
+
+  if (ev.key === "ArrowDown") {
+    ev.preventDefault();
+    info.focusIdx = (info.focusIdx + 1) % len;
+  } else if (ev.key === "ArrowUp") {
+    ev.preventDefault();
+    info.focusIdx = (info.focusIdx - 1 + len) % len;
+  } else if (ev.key === "Enter") {
+    ev.preventDefault();
+    const chosen = info.filtered[Math.max(0, info.focusIdx)];
+    if (chosen) overrideStageModel(stageId, chosen.key);
+    return;
+  } else {
+    return;
+  }
+
+  if (listEl) {
+    listEl.querySelectorAll(".model-combo-item").forEach((row, idx) => {
+      const active = idx === info.focusIdx;
+      row.classList.toggle("focused", active);
+      if (active) row.scrollIntoView({ block: "nearest" });
+    });
+  }
+};
+
+function renderGlobalQuickMatches() {
+  const box = document.getElementById("globalQuickSearchMatches");
+  if (!box) return;
+  const q = (state.globalModelQuery || "").trim();
+  const filterMode = document.getElementById("modelFilterSelect")?.value || "all";
+  if (!q) {
+    box.style.display = "none";
+    box.innerHTML = "";
+    return;
+  }
+  const matches = (state.scan?.models || []).filter((m) => {
+    if (filterMode === "free" && !m.is_free) return false;
+    if (filterMode === "vision" && !m.supports_vision) return false;
+    return modelMatchesQuery(m, q);
+  });
+
+  box.style.display = "block";
+  if (!matches.length) {
+    box.innerHTML = `<div class="model-combo-empty" style="background:#090e1a; border:1px solid var(--border); border-radius:9px;">No encontramos modelos que coincidan con "<strong>${esc(q)}</strong>".</div>`;
+    return;
+  }
+
+  box.innerHTML = `
+    <div style="background:#090e1a; border:1px solid rgba(99,102,241,0.4); border-radius:10px; padding:10px 12px;">
+      <div style="font-size:11.5px; color:var(--text-muted); margin-bottom:7px;">
+        <strong>${matches.length} coincidencia${matches.length === 1 ? "" : "s"}</strong> para "${esc(q)}" — pulsa en un modelo para aplicarlo a todas las etapas compatibles o abre una etapa abajo:
+      </div>
+      <div style="display:flex; flex-wrap:wrap; gap:7px;">
+        ${matches.slice(0, 8).map((m) => `
+          <button
+            type="button"
+            class="btn btn-sm"
+            style="background:#111b31; border-color:rgba(99,102,241,0.38);"
+            onclick="applyModelToAllStages('${esc(m.key)}')"
+          >
+            <span>[${esc(m.provider_label)}] ${esc(m.display_name)}</span>
+            <span class="badge ${m.is_free ? "badge-free" : "badge-paid"}">${m.is_free ? "GRATIS" : esc(m.free_note || "Pago")}</span>
+            ${m.supports_vision ? '<span class="badge badge-vision">Visión</span>' : ""}
+            <span style="color:#a5b4fc; font-size:11px;">→ Usar en todas</span>
+          </button>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderWizardModelSearchResults() {
+  const resBox = document.getElementById("wizModelSearchResults");
+  const inp = document.getElementById("wizModelSearchInput");
+  if (!resBox || !inp) return;
+  const q = inp.value.trim();
+  const models = (state.scan?.models || []).filter((m) => modelMatchesQuery(m, q));
+  if (!models.length) {
+    resBox.innerHTML = `<div class="model-combo-empty">Conecta un proveedor arriba o prueba otro nombre.</div>`;
+    return;
+  }
+  resBox.innerHTML = models.slice(0, 25).map((m) => `
+    <div class="model-combo-item" onclick="applyModelToAllStages('${esc(m.key)}')">
+      <div class="model-combo-item-left">
+        <div class="model-combo-item-title">[${esc(m.provider_label)}] ${esc(m.display_name)}</div>
+      </div>
+      <div class="model-combo-item-right">
+        <span class="badge ${m.is_free ? "badge-free" : "badge-paid"}">${m.is_free ? "GRATIS" : esc(m.free_note || "Pago")}</span>
+        ${m.supports_vision ? '<span class="badge badge-vision">Visión</span>' : ""}
+        <span class="model-apply-all-btn">Seleccionar</span>
+      </div>
+    </div>
+  `).join("");
 }
 
 window.overrideStageModel = async function (stageId, modelKey) {
   if (!modelKey) return;
-  const baseMap = state.recommendations?.profiles?.[state.activeProfile] || {};
+  closeAllStageCombos();
+  const baseMap = state.recommendations?.profiles?.[state.activeProfile]
+    || state.recommendations?.profiles?.balanced
+    || {};
   state.stageOverrides = { ...baseMap, ...state.stageOverrides, [stageId]: modelKey };
   state.activeProfile = "custom";
   try {
     await api("/api/settings", "POST", { model_profile: "custom", stage_models: state.stageOverrides });
     renderModelRecommendationsUI();
-    toast("Modelo personalizado guardado.");
+    toast("Modelo guardado para esta etapa.");
+  } catch (e) {
+    toast(e.message);
+  }
+};
+
+window.applyModelToAllStages = async function (modelKey) {
+  if (!modelKey) return;
+  closeAllStageCombos();
+  const allModels = state.scan?.models || [];
+  const chosen = allModels.find((m) => m.key === modelKey);
+  if (!chosen) return;
+
+  const baseMap = state.recommendations?.profiles?.balanced || {};
+  const nextMap = { ...baseMap, ...state.stageOverrides };
+  (state.recommendations?.stages || []).forEach((st) => {
+    if (!st.requires_vision || chosen.supports_vision) {
+      nextMap[st.id] = modelKey;
+    }
+  });
+  state.stageOverrides = nextMap;
+  state.activeProfile = "custom";
+  try {
+    await api("/api/settings", "POST", { model_profile: "custom", stage_models: state.stageOverrides });
+    renderModelRecommendationsUI();
+    toast(
+      chosen.supports_vision
+        ? `¡${chosen.display_name} aplicado a las 9 etapas!`
+        : `¡${chosen.display_name} aplicado a etapas de texto (conservando Visión en etapas 4 y 6)!`
+    );
   } catch (e) {
     toast(e.message);
   }
@@ -430,6 +713,51 @@ document.addEventListener("DOMContentLoaded", () => {
     toast("Lista de modelos actualizada.");
   });
   document.getElementById("modelFilterSelect").addEventListener("change", () => renderModelRecommendationsUI());
+
+  const searchInp = document.getElementById("modelSearchInput");
+  const clearBtn = document.getElementById("btnClearModelSearch");
+  if (searchInp && clearBtn) {
+    searchInp.addEventListener("input", () => {
+      state.globalModelQuery = searchInp.value;
+      clearBtn.style.display = searchInp.value ? "grid" : "none";
+      renderGlobalQuickMatches();
+      document.querySelectorAll(".model-combo.open").forEach((el) => {
+        const stId = el.dataset.stage;
+        const cInp = document.getElementById(`comboInput_${stId}`);
+        if (cInp) cInp.value = state.globalModelQuery;
+        renderStageComboItems(stId, state.globalModelQuery);
+      });
+    });
+    clearBtn.addEventListener("click", () => {
+      searchInp.value = "";
+      state.globalModelQuery = "";
+      clearBtn.style.display = "none";
+      renderGlobalQuickMatches();
+      searchInp.focus();
+    });
+  }
+
+  const wizProfSel = document.getElementById("wizProfileSelect");
+  const wizWrap = document.getElementById("wizCustomModelWrap");
+  const wizSearch = document.getElementById("wizModelSearchInput");
+  if (wizProfSel && wizWrap) {
+    wizProfSel.addEventListener("change", () => {
+      wizWrap.style.display = wizProfSel.value === "custom" ? "block" : "none";
+      if (wizProfSel.value === "custom") {
+        renderWizardModelSearchResults();
+        if (wizSearch) setTimeout(() => wizSearch.focus(), 20);
+      }
+    });
+  }
+  if (wizSearch) {
+    wizSearch.addEventListener("input", () => renderWizardModelSearchResults());
+  }
+
+  document.addEventListener("mousedown", (ev) => {
+    if (!ev.target.closest(".model-combo")) {
+      closeAllStageCombos();
+    }
+  });
 });
 
 /* ==================== CHANNELS & WIZARD (REPLACES GRILL-ME) ==================== */
@@ -438,18 +766,22 @@ function renderChannelsDropdownAndTab(channelsObj) {
   const activeId = channelsObj?.active_default_channel || "";
 
   const sel = document.getElementById("topChannelSelect");
-  if (!items.length) {
-    sel.innerHTML = `<option value="">Canal de prueba (Local)</option>`;
-  } else {
-    sel.innerHTML = items.map((c) => (
-      `<option value="${esc(c.id)}" ${c.id === activeId ? "selected" : ""}>${esc(c.name)} (${c.language.toUpperCase()})</option>`
-    )).join("");
-  }
+  const options = [
+    `<option value="" ${!activeId ? "selected" : ""}>⚡ Modo libre (Sin canal / Piloto)</option>`,
+    ...items.map((c) => (
+      `<option value="${esc(c.id)}" ${c.id === activeId ? "selected" : ""}>📺 ${esc(c.name)} (${c.language.toUpperCase()})</option>`
+    ))
+  ];
+  sel.innerHTML = options.join("");
   sel.onchange = async () => {
     if (sel.value) {
       await api(`/api/channels/active/${sel.value}`, "POST");
-      toast(`Canal seleccionado: ${sel.options[sel.selectedIndex].text}`);
+      toast(`Canal activo: ${sel.options[sel.selectedIndex].text}`);
+    } else {
+      await api(`/api/channels/active/_clear_`, "POST").catch(() => {});
+      toast(`Modo libre seleccionado (Sin canal asignado).`);
     }
+    await refreshBootstrap();
   };
 
   const grid = document.getElementById("channelsListGrid");
@@ -472,7 +804,10 @@ function renderChannelsDropdownAndTab(channelsObj) {
             <strong style="font-size:15px;">${esc(c.name)}</strong>
             <span class="badge badge-vision" style="margin-left:6px;">${c.language === "en" ? "Inglés" : "Español"} · 62-72 s</span>
           </div>
-          ${c.id === activeId ? '<span class="badge badge-free">Canal activo</span>' : `<button class="btn btn-sm" onclick="setActiveChannel('${c.id}')">Usar este canal</button>`}
+          <div style="display:flex; gap:6px; align-items:center;">
+            ${c.id === activeId ? '<span class="badge badge-free">Canal activo</span>' : `<button class="btn btn-sm" onclick="setActiveChannel('${c.id}')">Usar este canal</button>`}
+            <button class="btn btn-sm" onclick="deleteChannel('${c.id}', '${esc(c.name)}')" style="color:#f87171; border-color:rgba(239,68,68,0.3); background:rgba(239,68,68,0.08);" title="Eliminar este canal">🗑️ Borrar</button>
+          </div>
         </div>
         <p style="font-size:12.5px; color:var(--text-muted); margin-bottom:10px;">
           Categoría: <strong>${esc(c.group)}</strong> · Narrador: <strong>${esc(c.voice_preference)}</strong>
@@ -499,6 +834,21 @@ window.setActiveChannel = async function (cid) {
   await api(`/api/channels/active/${cid}`, "POST");
   await refreshBootstrap();
   toast("Canal activo actualizado.");
+};
+
+window.deleteChannel = async function (cid, name) {
+  if (!confirm(`¿Estás seguro de que deseas eliminar el canal "${name}"?\nEsta acción no se puede deshacer.`)) return;
+  try {
+    const res = await api(`/api/channels/${cid}`, "DELETE");
+    if (res.ok) {
+      toast(`Canal "${name}" eliminado correctamente.`);
+      await refreshBootstrap();
+    } else {
+      toast("No se pudo eliminar el canal.");
+    }
+  } catch (err) {
+    toast(`Error: ${err.message || err}`);
+  }
 };
 
 window.connectSocial = async function (channelId, platform) {
@@ -843,7 +1193,38 @@ function pollPipeline() {
   }, 1100);
 }
 
+function updatePreviewImageOnce(wrapId, filePath, versionTag, altText) {
+  const wrap = document.getElementById(wrapId);
+  if (!wrap || !filePath) return;
+  const cacheKey = `${filePath}::${versionTag || ""}`;
+  if (wrap.dataset.renderedKey === cacheKey) return;
+  wrap.dataset.renderedKey = cacheKey;
+
+  const url = `/api/media?path=${encodeURIComponent(filePath)}&v=${encodeURIComponent(versionTag || "1")}`;
+  const existingImg = wrap.querySelector("img");
+  if (existingImg) {
+    const pre = new Image();
+    pre.onload = () => { existingImg.src = url; };
+    pre.src = url;
+  } else {
+    wrap.innerHTML = `<img src="${url}" alt="${esc(altText)}" />`;
+  }
+}
+
 function renderLivePipeline(st) {
+  // Reset preview keys when a brand-new run starts
+  if (st.run_id && state._lastPreviewRunId !== st.run_id) {
+    state._lastPreviewRunId = st.run_id;
+    ["prevTrendWrap", "prevScriptWrap", "prevSeoWrap", "prevThumbWrap", "prevFinalWrap"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) {
+        delete el.dataset.renderedKey;
+        el.innerHTML = (id === "prevFinalWrap" || id === "prevThumbWrap") ? "Se mostrará al finalizar" : "Se mostrará al iniciar";
+        el.className = "preview-empty";
+      }
+    });
+  }
+
   const statusLabels = {
     running: "En progreso",
     awaiting_copilot: "Esperando tu confirmación",
@@ -863,32 +1244,140 @@ function renderLivePipeline(st) {
   };
 
   const grid = document.getElementById("stagesGrid");
-  grid.innerHTML = (st.stages || []).map((s) => `
-    <div class="stage-card ${esc(s.status)}">
-      <div class="stage-top">
-        <span class="stage-name">${esc(s.name)}</span>
-        <span class="stage-timer">${s.elapsed_sec ? `${s.elapsed_sec} s` : (s.status === "running" ? "En curso..." : "—")}</span>
+  const stageKey = (st.stages || []).map(s => `${s.name}:${s.status}:${s.elapsed_sec || ""}:${s.summary || ""}:${s.model_key || ""}`).join("|");
+  if (grid.dataset.renderedKey !== stageKey) {
+    grid.dataset.renderedKey = stageKey;
+    grid.innerHTML = (st.stages || []).map((s) => `
+      <div class="stage-card ${esc(s.status)}">
+        <div class="stage-top">
+          <span class="stage-name">${esc(s.name)}</span>
+          <span class="stage-timer">${s.elapsed_sec ? `${s.elapsed_sec} s` : (s.status === "running" ? "En curso..." : "—")}</span>
+        </div>
+        <div class="stage-model" title="${esc(s.model_key)}">${esc(s.model_key ? s.model_key.replace("::", " · ") : s.role)}</div>
+        <div class="stage-summary">${esc(s.summary || stageStatusMap[s.status] || s.status)}</div>
       </div>
-      <div class="stage-model" title="${esc(s.model_key)}">${esc(s.model_key ? s.model_key.replace("::", " · ") : s.role)}</div>
-      <div class="stage-summary">${esc(s.summary || stageStatusMap[s.status] || s.status)}</div>
-    </div>
-  `).join("");
+    `).join("");
+  }
 
   const p = st.previews || {};
-  if (p.candidates_grid) {
-    document.getElementById("prevGridWrap").innerHTML = `<img src="${mediaUrl(p.candidates_grid)}" alt="Fotos reales candidatas" />`;
+  const s5Ver = st.stages?.[4]?.elapsed_sec || "1";
+  const s7Ver = st.stages?.[6]?.elapsed_sec || "1";
+
+  // Box 1: Tendencia seleccionada
+  const trendWrap = document.getElementById("prevTrendWrap");
+  if (trendWrap) {
+    const tb = p.trend_brief || {};
+    const topic = tb.selected_topic || st.topic || "";
+    if (topic) {
+      const angle = tb.viral_angle || "Verificado";
+      const entity = tb.real_subject_entity || "";
+      const why = tb.why_viral || "";
+      const tKey = `${topic}::${angle}::${entity}`;
+      if (trendWrap.dataset.renderedKey !== tKey) {
+        trendWrap.dataset.renderedKey = tKey;
+        trendWrap.className = "";
+        trendWrap.innerHTML = `
+          <div class="preview-scroll-content">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+              <span class="badge badge-paid">🔥 Tendencia</span>
+              <span style="font-size:10.5px; color:#6ee7b7;">Aprobada</span>
+            </div>
+            <div style="font-weight:700; color:#fff; font-size:12.5px; margin-bottom:6px;">${esc(topic)}</div>
+            <div style="font-size:11px; color:#94a3b8; margin-bottom:4px;"><strong>Ángulo:</strong> ${esc(angle)}</div>
+            ${entity ? `<div style="font-size:11px; color:#94a3b8; margin-bottom:4px;"><strong>Entidad real:</strong> ${esc(entity)}</div>` : ""}
+            ${why ? `<div style="font-size:10.5px; color:#a5b4fc; margin-top:6px; font-style:italic; border-top:1px dashed rgba(255,255,255,0.1); padding-top:4px;">💡 ${esc(why)}</div>` : ""}
+          </div>
+        `;
+      }
+    }
   }
-  if (p.mosaico_clips) {
-    document.getElementById("prevMosaicWrap").innerHTML = `<img src="${mediaUrl(p.mosaico_clips)}" alt="Escenas de apoyo" />`;
+
+  // Box 2: Guión Viral
+  const scriptWrap = document.getElementById("prevScriptWrap");
+  if (scriptWrap) {
+    const scData = p.script_data || {};
+    const fullScript = scData.full_script || (st.copilot_data?.script?.full_script) || "";
+    if (fullScript) {
+      const words = fullScript.trim().split(/\s+/).length;
+      const sKey = `${fullScript.length}::${words}`;
+      if (scriptWrap.dataset.renderedKey !== sKey) {
+        scriptWrap.dataset.renderedKey = sKey;
+        scriptWrap.className = "";
+        scriptWrap.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <span class="badge badge-free">${words} palabras · 62-72s</span>
+            <button class="btn btn-sm" style="padding:2px 8px; font-size:10.5px;" onclick="copyDirectText(${JSON.stringify(fullScript)}, 'Guión viral copiado al portapapeles')">📋 Copiar</button>
+          </div>
+          <div class="preview-scroll-content" style="white-space:pre-wrap;">${esc(fullScript)}</div>
+        `;
+      }
+    }
   }
-  if (p.qa_strip) {
-    document.getElementById("prevQaWrap").innerHTML = `<img src="${mediaUrl(p.qa_strip)}" alt="Revisión de calidad" />`;
+
+  // Box 3: Título, Descripción y Tags
+  const seoWrap = document.getElementById("prevSeoWrap");
+  if (seoWrap) {
+    const meta = p.viral_metadata || {};
+    const title = meta.primary_title || "";
+    if (title) {
+      const desc = meta.description || "";
+      const pinned = meta.pinned_comment || "";
+      const tags = (meta.tags || []).join(" #");
+      const packText = `${title}\n\n${desc}\n\nComentario fijado:\n${pinned}\n\nEtiquetas:\n#${tags}`;
+      const mKey = `${title}::${tags}`;
+      if (seoWrap.dataset.renderedKey !== mKey) {
+        seoWrap.dataset.renderedKey = mKey;
+        seoWrap.className = "";
+        seoWrap.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <span class="badge badge-vision">Pack SEO</span>
+            <button class="btn btn-primary btn-sm" style="padding:2px 8px; font-size:10.5px;" onclick="copyDirectText(${JSON.stringify(packText)}, 'Pack SEO copiado al portapapeles')">📋 Copiar</button>
+          </div>
+          <div class="preview-scroll-content">
+            <div style="font-weight:700; color:#38bdf8; margin-bottom:4px; font-size:12px;">${esc(title)}</div>
+            <div style="color:#e2e8f0; margin-bottom:6px; font-size:11px;">${esc(desc)}</div>
+            ${pinned ? `<div style="color:#fcd34d; margin-bottom:6px; font-size:11px; background:rgba(245,158,11,0.08); padding:4px 6px; border-radius:4px;"><strong>📌 Comentario:</strong> ${esc(pinned)}</div>` : ""}
+            ${tags ? `<div style="color:#a78bfa; font-size:10.5px;">#${esc(tags)}</div>` : ""}
+          </div>
+        `;
+      }
+    }
   }
-  if (p.final_video) {
-    document.getElementById("prevFinalWrap").innerHTML = `
-      <video src="${mediaUrl(p.final_video)}" controls poster="${p.thumbnail ? mediaUrl(p.thumbnail) : ""}"></video>
-      ${p.publication_folder ? `<button class="btn btn-sm" style="margin-top:8px;" onclick="openFolder('${esc(p.publication_folder.replace(/\\/g, "\\\\"))}')">📂 Ver en carpeta</button>` : ""}
-    `;
+
+  // Box 4: Portada viral (Miniatura con opción de ver en grande)
+  const thumbWrap = document.getElementById("prevThumbWrap");
+  if (thumbWrap && p.thumbnail) {
+    const thumbUrl = `/api/media?path=${encodeURIComponent(p.thumbnail)}&v=${encodeURIComponent(s7Ver)}`;
+    const tKey = `${p.thumbnail}::${s7Ver}`;
+    if (thumbWrap.dataset.renderedKey !== tKey) {
+      thumbWrap.dataset.renderedKey = tKey;
+      thumbWrap.className = "";
+      thumbWrap.innerHTML = `
+        <div class="preview-thumb-container" onclick="openImageLightbox('${esc(thumbUrl)}', 'Portada viral (Alta resolución)')" title="Haz clic para ver la miniatura en grande">
+          <img src="${thumbUrl}" alt="Portada viral (Miniatura)" />
+          <div class="preview-thumb-badge">🔍 Clic para ver en grande</div>
+        </div>
+        <div style="display:flex; justify-content:center; gap:8px; margin-top:6px;">
+          <button class="btn btn-sm" style="padding:3px 10px; font-size:11px;" onclick="openImageLightbox('${esc(thumbUrl)}', 'Portada viral (Alta resolución)')">🔍 Ver en grande</button>
+        </div>
+      `;
+    }
+  }
+
+  // Box 5: Video terminado
+  const finalWrap = document.getElementById("prevFinalWrap");
+  if (finalWrap && p.final_video) {
+    const finalKey = `${p.final_video}::${s5Ver}::${p.thumbnail || ""}::${s7Ver}::${p.publication_folder || ""}`;
+    if (finalWrap.dataset.renderedKey !== finalKey) {
+      finalWrap.dataset.renderedKey = finalKey;
+      finalWrap.className = "";
+      const vidUrl = `/api/media?path=${encodeURIComponent(p.final_video)}&v=${encodeURIComponent(s5Ver)}`;
+      const thumbUrl = p.thumbnail ? `/api/media?path=${encodeURIComponent(p.thumbnail)}&v=${encodeURIComponent(s7Ver)}` : "";
+      finalWrap.innerHTML = `
+        <video src="${vidUrl}" controls poster="${thumbUrl}"></video>
+        ${p.publication_folder ? `<button class="btn btn-sm" style="margin-top:8px; width:100%;" onclick="openFolder('${esc(p.publication_folder.replace(/\\/g, "\\\\"))}')">📂 Ver en carpeta</button>` : ""}
+      `;
+    }
   }
 
   // Copilot Interactive Approval Gate
@@ -896,7 +1385,8 @@ function renderLivePipeline(st) {
   if (st.status === "awaiting_copilot" && st.copilot_gate === "script") {
     copCard.style.display = "block";
     const sc = st.copilot_data?.script?.full_script || "";
-    if (!document.getElementById("copilotScriptBox")) {
+    if (copCard.dataset.renderedKey !== "script") {
+      copCard.dataset.renderedKey = "script";
       document.getElementById("copilotTitle").textContent = "🎛️ Revisa o edita el guión antes de grabar la narración";
       document.getElementById("copilotBody").innerHTML = `
         <textarea id="copilotScriptBox" rows="5" style="margin-bottom:10px;">${esc(sc)}</textarea>
@@ -907,19 +1397,24 @@ function renderLivePipeline(st) {
     copCard.style.display = "block";
     const cands = st.copilot_data?.candidates || [];
     const rec = st.copilot_data?.recommended_candidate || 1;
-    document.getElementById("copilotTitle").textContent = `🎛️ Elige la foto real para los primeros 4 segundos (Recomendada: Opción #${rec})`;
-    document.getElementById("copilotBody").innerHTML = `
-      <div class="grid-4" style="margin-bottom:10px;">
-        ${cands.map((cp, idx) => `
-          <div class="preview-box" style="cursor:pointer; border-color:${idx + 1 === rec ? "var(--emerald)" : "var(--border)"};" onclick="approveCopilotPhoto(${idx + 1})">
-            <strong>Opción #${idx + 1} ${idx + 1 === rec ? "⭐ Recomendada" : ""}</strong>
-            <img src="${mediaUrl(cp)}" alt="Candidata ${idx + 1}" />
-          </div>
-        `).join("")}
-      </div>
-    `;
+    const currentKey = `visuals::${rec}::${cands.join("|")}`;
+    if (copCard.dataset.renderedKey !== currentKey) {
+      copCard.dataset.renderedKey = currentKey;
+      document.getElementById("copilotTitle").textContent = `🎛️ Elige la foto real para los primeros 4 segundos (Recomendada: Opción #${rec})`;
+      document.getElementById("copilotBody").innerHTML = `
+        <div class="grid-4" style="margin-bottom:10px;">
+          ${cands.map((cp, idx) => `
+            <div class="preview-box" style="cursor:pointer; border-color:${idx + 1 === rec ? "var(--emerald)" : "var(--border)"};" onclick="approveCopilotPhoto(${idx + 1})">
+              <strong>Opción #${idx + 1} ${idx + 1 === rec ? "⭐ Recomendada" : ""}</strong>
+              <img src="${mediaUrl(cp)}" alt="Candidata ${idx + 1}" />
+            </div>
+          `).join("")}
+        </div>
+      `;
+    }
   } else {
     copCard.style.display = "none";
+    copCard.dataset.renderedKey = "";
     document.getElementById("copilotBody").innerHTML = "";
   }
 }
@@ -936,20 +1431,46 @@ window.approveCopilotPhoto = async function (idx) {
 };
 
 /* ==================== GALLERY & 30-DAY PROTECTION ==================== */
-async function refreshGallery() {
-  const res = await api("/api/gallery");
-  renderCacheBar(res.cache);
+function populateGalleryChannelFilter(vids) {
+  const filterSel = document.getElementById("galleryChannelFilter");
+  if (!filterSel) return;
+  const currentVal = filterSel.value;
+  const counts = {};
+  vids.forEach((v) => {
+    const ch = v.channel || "⚡ Modo libre / Piloto";
+    counts[ch] = (counts[ch] || 0) + 1;
+  });
 
+  let html = `<option value="">📺 Todos los canales (${vids.length})</option>`;
+  Object.keys(counts).sort().forEach((ch) => {
+    html += `<option value="${esc(ch)}">${esc(ch)} (${counts[ch]})</option>`;
+  });
+  filterSel.innerHTML = html;
+  if (currentVal && counts[currentVal] !== undefined) {
+    filterSel.value = currentVal;
+  }
+}
+
+function renderFilteredGallery() {
   const vGrid = document.getElementById("galleryVideosGrid");
-  const vids = res.videos || [];
-  if (!vids.length) {
+  const filterSel = document.getElementById("galleryChannelFilter");
+  const selectedChannel = filterSel ? filterSel.value : "";
+  const allVids = window._galleryVideos || [];
+
+  const filtered = selectedChannel
+    ? allVids.filter((v) => (v.channel || "⚡ Modo libre / Piloto") === selectedChannel)
+    : allVids;
+
+  if (!filtered.length) {
     vGrid.innerHTML = `
       <div class="card" style="grid-column:1/-1; color:var(--text-muted); text-align:center; padding:26px;">
-        Todavía no tienes videos terminados en tu biblioteca. Ve a <strong>Crear Videos</strong> para producir el primero.
+        ${allVids.length ? `No hay videos terminados para el canal "<strong>${esc(selectedChannel)}</strong>".` : `Todavía no tienes videos terminados en tu biblioteca. Ve a <strong>Crear Videos</strong> para producir el primero.`}
       </div>
     `;
   } else {
-    vGrid.innerHTML = vids.map((v, idx) => `
+    vGrid.innerHTML = filtered.map((v) => {
+      const origIdx = allVids.indexOf(v);
+      return `
       <div class="card" style="margin:0;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
           <span class="badge badge-vision">${esc(v.channel)}</span>
@@ -957,14 +1478,25 @@ async function refreshGallery() {
         </div>
         ${v.video_path ? `<video src="${mediaUrl(v.video_path)}" controls poster="${v.thumbnail_path ? mediaUrl(v.thumbnail_path) : ""}" style="width:100%; max-height:280px; border-radius:8px; background:#000;"></video>` : ""}
         <div style="font-size:13px; font-weight:700; margin:8px 0;">${esc(v.slug)}</div>
-        <div style="display:flex; gap:8px;">
-          <button class="btn btn-primary btn-sm" onclick="copyPack(${idx})">Copiar título y descripción</button>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn btn-primary btn-sm" onclick="copyPack(${origIdx >= 0 ? origIdx : 0})">Copiar título y texto</button>
+          ${v.thumbnail_path ? `<button class="btn btn-sm" onclick="openImageLightbox('${mediaUrl(v.thumbnail_path)}', 'Portada: ${esc(v.slug)}')">🔍 Miniatura</button>` : ""}
           <button class="btn btn-sm" onclick="openFolder('${esc(v.folder.replace(/\\/g, "\\\\"))}')">Abrir carpeta</button>
+          <button class="btn btn-sm" onclick="deleteVideo('${esc(v.folder.replace(/\\/g, "\\\\"))}', '${esc(v.slug)}')" style="color:#f87171; border-color:rgba(239,68,68,0.3); background:rgba(239,68,68,0.08);" title="Eliminar este video de la biblioteca">🗑️ Borrar</button>
         </div>
       </div>
-    `).join("");
-    window._galleryVideos = vids;
+    `;
+    }).join("");
   }
+}
+
+async function refreshGallery() {
+  const res = await api("/api/gallery");
+  renderCacheBar(res.cache);
+
+  window._galleryVideos = res.videos || [];
+  populateGalleryChannelFilter(window._galleryVideos);
+  renderFilteredGallery();
 
   const cBody = document.getElementById("cooldownTableBody");
   const cools = res.cooldown_active || [];
@@ -988,11 +1520,59 @@ window.copyPack = function (idx) {
   }
 };
 
+window.deleteVideo = async function (folder, slug) {
+  if (!confirm(`¿Estás seguro de que deseas eliminar el video "${slug}"?\nSe borrarán sus archivos y se liberará el tema de la lista de 30 días.`)) return;
+  try {
+    const res = await api(`/api/gallery?folder=${encodeURIComponent(folder)}`, "DELETE");
+    if (res.ok) {
+      toast(`Video "${slug}" eliminado correctamente.`);
+      await refreshGallery();
+      await refreshBootstrap();
+    } else {
+      toast("No se pudo eliminar el video.");
+    }
+  } catch (err) {
+    toast(`Error: ${err.message || err}`);
+  }
+};
+
 window.openFolder = function (folderPath) {
   api("/api/system/open-folder", "POST", { target: folderPath });
 };
 
+window.openImageLightbox = function (src, title) {
+  const bd = document.getElementById("imageLightboxBackdrop");
+  const img = document.getElementById("lightboxImg");
+  const t = document.getElementById("lightboxTitle");
+  if (!bd || !img) return;
+  img.src = src;
+  if (t && title) t.textContent = title;
+  bd.classList.add("open");
+};
+
+window.closeImageLightbox = function (e) {
+  if (e && e.target && e.target.id === "lightboxImg") return;
+  const bd = document.getElementById("imageLightboxBackdrop");
+  if (bd) bd.classList.remove("open");
+};
+
+window.copyDirectText = function (text, msg) {
+  if (text) {
+    navigator.clipboard.writeText(text);
+    toast(msg || "Copiado al portapapeles.");
+  }
+};
+
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btnRefreshGallery").addEventListener("click", refreshGallery);
+  const chFilter = document.getElementById("galleryChannelFilter");
+  if (chFilter) {
+    chFilter.addEventListener("change", renderFilteredGallery);
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      closeImageLightbox();
+    }
+  });
   initApp();
 });

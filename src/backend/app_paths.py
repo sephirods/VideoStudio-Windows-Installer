@@ -104,8 +104,8 @@ def locate_cli_engine_source() -> Path | None:
         install_root / "cli_engine",
         get_resource_root() / "cli_engine",
         install_root.parent / "cli",
-        Path(r"C:\ganar dinero"),
         Path(r"C:\VideoStudio\cli"),
+        Path(r"C:\ganar dinero"),
     ]
     for c in candidates:
         if (c / "scripts" / "run_pipeline_job.py").exists():
@@ -185,7 +185,8 @@ def bootstrap_workspace(force_sync: bool = False) -> dict:
     if stamp_file.exists() and stamp_file.read_text(encoding="utf-8").strip() != ver:
         needs_sync = True
 
-    if src_engine and (needs_sync or not is_frozen()):
+    # Always run fast size/mtime delta sync so upgraded installers immediately refresh scripts/ in %APPDATA%
+    if src_engine:
         for rel_item in SYNC_ENGINE_ITEMS:
             s_path = src_engine / rel_item
             d_path = ws / rel_item

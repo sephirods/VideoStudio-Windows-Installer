@@ -12,6 +12,7 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import webbrowser
@@ -418,6 +419,10 @@ async def api_save_channel(req: ChannelSaveReq) -> dict[str, Any]:
 @app.post("/api/channels/active/{channel_id}")
 async def api_set_active_channel(channel_id: str) -> dict[str, Any]:
     data = _load_channels_data()
+    if channel_id in ("_clear_", "none", "demo", "null", "libre", ""):
+        data["active_default_channel"] = None
+        _save_channels_data(data)
+        return {"ok": True, "active_default_channel": None}
     if channel_id not in (data.get("channels") or {}):
         raise HTTPException(status_code=404, detail="Canal no encontrado.")
     data["active_default_channel"] = channel_id
@@ -448,7 +453,9 @@ async def api_connect_social(req: SocialConnectReq) -> dict[str, Any]:
 
     async def _runner() -> None:
         cmd = get_python_script_cmd(script, "--channel", req.channel_id, "--platform", req.platform)
-        res = await asyncio.to_thread(subprocess.run, cmd, cwd=str(ws), capture_output=True, text=True)
+        res = await asyncio.to_thread(
+            subprocess.run, cmd, cwd=str(ws), capture_output=True, text=True, creationflags=NO_WINDOW
+        )
         sess_ok = _get_session_status_for_channel(req.channel_id).get(req.platform, False)
         _SOCIAL_JOBS[job_key] = {
             "status": "connected" if (res.returncode == 0 and sess_ok) else "cancelled",
@@ -509,7 +516,8 @@ async def api_gallery() -> dict[str, Any]:
             dur = None
             if qa_f.exists():
                 try:
-                    dur = (json.loads(qa_f.read_text(encoding="utf-8")).get("technical_probe") or {}).get("duration")
+                    qa_json = json.loads(qa_f.read_text(encoding="utf-8"))
+                    dur = qa_json.get("measured_duration_seconds") or (qa_json.get("technical_probe") or {}).get("duration")
                 except Exception:
                     pass
             items.append({
@@ -551,6 +559,43 @@ async def api_gallery() -> dict[str, Any]:
             pass
 
     return {"videos": items, "cooldown_active": cooldown_items[:40], "cache": get_cache_health()}
+
+
+@app.delete("/api/gallery")
+async def api_delete_gallery_video(folder: str = Query(...)) -> dict[str, Any]:
+    ws = get_workspace_dir()
+    target = Path(folder).resolve()
+    pub_root = (ws / "videos" / "publicaciones").resolve()
+    try:
+        target.relative_to(pub_root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Ruta de video inválida o fuera de publicaciones.")
+
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="El video ya no existe en disco.")
+
+    topic_to_remove = None
+    man_file = target / "package_manifest.json"
+    if man_file.exists():
+        try:
+            m = json.loads(man_file.read_text(encoding="utf-8"))
+            topic_to_remove = m.get("topic")
+        except Exception:
+            pass
+
+    shutil.rmtree(target, ignore_errors=True)
+
+    if topic_to_remove:
+        hist_file = ws / "config" / "history" / "publication_history.json"
+        if hist_file.exists():
+            try:
+                hist = json.loads(hist_file.read_text(encoding="utf-8"))
+                hist = [h for h in hist if h.get("topic") != topic_to_remove]
+                hist_file.write_text(json.dumps(hist, indent=2, ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
+
+    return {"ok": True, "deleted_folder": str(target), "cache": get_cache_health()}
 
 
 @app.get("/api/media")

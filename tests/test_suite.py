@@ -280,7 +280,7 @@ class VideoStudioWindowsTestSuite(unittest.TestCase):
             r = client.get("/api/bootstrap")
             self.assertEqual(r.status_code, 200)
             boot = r.json()
-            self.assertEqual(boot["version"]["version"], "1.0.0")
+            self.assertEqual(boot["version"]["version"], "1.0.5")
             self.assertEqual(len(boot["voices"]), 8)
 
             # Save channel via Wizard endpoint
@@ -298,6 +298,26 @@ class VideoStudioWindowsTestSuite(unittest.TestCase):
             self.assertEqual(cr.status_code, 200)
             self.assertEqual(cr.json()["channel_id"], "imperio_oculto")
 
+            # Clear active channel (Modo Libre / Sin canal)
+            clr = client.post("/api/channels/active/_clear_")
+            self.assertEqual(clr.status_code, 200)
+            self.assertIsNone(clr.json()["active_default_channel"])
+
+            # Delete channel endpoint
+            dr = client.delete("/api/channels/imperio_oculto")
+            self.assertEqual(dr.status_code, 200)
+            # Delete gallery video endpoint safety check (must reject outside publications)
+            bad_del = client.delete('/api/gallery?folder=C:/Windows')
+            # Valid gallery video deletion inside publications_dir
+            from src.backend.app_paths import get_workspace_dir
+            pub_root = get_workspace_dir() / 'videos' / 'publicaciones' / 'test_channel' / '2026-11-06_test_video'
+            pub_root.mkdir(parents=True, exist_ok=True)
+            (pub_root / 'video_final.mp4').write_bytes(b'dummy video')
+            good_del = client.delete(f'/api/gallery?folder={pub_root}')
+            self.assertEqual(good_del.status_code, 200)
+            self.assertFalse(pub_root.exists())
+            self.assertEqual(bad_del.status_code, 400)
+
             # Niche suggestions endpoint
             nr = client.post("/api/ai/suggest-niches", json={"language": "en", "purpose": "monetization"})
             self.assertEqual(nr.status_code, 200)
@@ -307,6 +327,24 @@ class VideoStudioWindowsTestSuite(unittest.TestCase):
             vr = client.get("/api/voices/sample/es-MX-JorgeNeural")
             self.assertEqual(vr.status_code, 200)
             self.assertGreater(len(vr.content), 4000)
+
+    def test_06_qa_self_healing_sanitizer_and_thumbnail_enhance(self) -> None:
+        from PIL import Image, ImageEnhance
+        from src.backend.pipeline_runner import _sanitize_and_bound_script
+
+        # 1) Verify PIL.ImageEnhance works cleanly
+        img = Image.new("RGB", (320, 180), (40, 80, 160))
+        bright = ImageEnhance.Brightness(img).enhance(1.15)
+        self.assertEqual(bright.size, (320, 180))
+
+        # 2) Verify QA script sanitizer strips forbidden farewells and bounds oversized scripts to target words
+        bloated = " ".join(["El Sol esconde una tormenta geomagnética colosal capaz de apagar satélites."] * 22)
+        bloated += " Suscríbete y dale like para más videos."
+        healed = _sanitize_and_bound_script(bloated, ideal_words=145, lang="es")
+        self.assertNotIn("suscríbete", healed.lower())
+        self.assertNotIn("dale like", healed.lower())
+        self.assertLessEqual(len(healed.split()), 160)
+        self.assertTrue(healed.endswith("?"))
 
 
 if __name__ == "__main__":

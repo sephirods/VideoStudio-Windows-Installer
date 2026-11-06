@@ -63,8 +63,8 @@ def _find_cli_repo() -> Path:
     candidates = [
         Path(os.environ.get("VIDEOSTUDIO_CLI_SOURCE", "")) if os.environ.get("VIDEOSTUDIO_CLI_SOURCE") else None,
         ROOT.parent / "cli",
-        Path(r"C:\ganar dinero"),
         Path(r"C:\VideoStudio\cli"),
+        Path(r"C:\ganar dinero"),
     ]
     for c in candidates:
         if c and (c / "scripts" / "run_pipeline_job.py").exists():
@@ -143,6 +143,7 @@ def build_all(skip_pyinstaller: bool = False) -> dict:
             sys.executable, "-m", "PyInstaller",
             "--noconfirm",
             "--clean",
+            "--log-level", "ERROR",
             "--onedir",
             "--windowed",
             "--name", "VideoStudio",
@@ -152,6 +153,7 @@ def build_all(skip_pyinstaller: bool = False) -> dict:
             "--add-data", f"{ROOT / 'src' / 'version.json'};src",
             "--add-data", f"{ROOT / 'assets'};assets",
             "--collect-all", "google.antigravity",
+            "--collect-all", "PIL",
             "--collect-all", "pydantic_core",
             "--collect-all", "pydantic",
             "--collect-all", "fastapi",
@@ -159,10 +161,28 @@ def build_all(skip_pyinstaller: bool = False) -> dict:
             "--collect-submodules", "uvicorn",
             "--collect-submodules", "httpx",
             "--collect-submodules", "httpcore",
+            "--collect-submodules", "edge_tts",
+            "--collect-submodules", "aiohttp",
+            "--collect-submodules", "yt_dlp",
+            "--collect-submodules", "playwright",
+            "--hidden-import", "PIL.Image",
+            "--hidden-import", "PIL.ImageDraw",
+            "--hidden-import", "PIL.ImageEnhance",
+            "--hidden-import", "PIL.ImageFilter",
+            "--hidden-import", "PIL.ImageFont",
+            "--hidden-import", "PIL.ImageOps",
             "--hidden-import", "yt_dlp",
             "--hidden-import", "edge_tts",
             "--hidden-import", "playwright.sync_api",
             "--hidden-import", "youtube_comment_downloader",
+            "--hidden-import", "xml.etree.ElementTree",
+            "--hidden-import", "urllib.request",
+            "--hidden-import", "urllib.parse",
+            "--hidden-import", "concurrent.futures",
+            "--hidden-import", "http.server",
+            "--hidden-import", "mimetypes",
+            "--hidden-import", "glob",
+            "--hidden-import", "platform",
             "--hidden-import", "pystray",
             "--hidden-import", "webview",
             str(ROOT / "src" / "main.py"),
@@ -186,7 +206,44 @@ def build_all(skip_pyinstaller: bool = False) -> dict:
                 raise RuntimeError(f"Smoke test CLI de VideoStudio.exe falló (rc={res.returncode}): {res.stderr}")
             print(f"      -> Smoke Test CLI OK: {smoke_out.read_text(encoding='utf-8')}")
 
-            # 2) Real Windowed Uvicorn + Edge WebView2 Live DOM Boot Test!
+            # 2) Embedded --run-script All-Scripts Import & Zero-CMD-Window Verification!
+            verify_script = Path(tmp_smoke) / "verify_embedded_scripts.py"
+            ws_scripts = Path(tmp_smoke) / "appdata" / "workspace" / "scripts"
+            # Copy staged cli_engine/scripts into smoke workspace so all sibling imports resolve identically to production
+            _copy_clean(staging_dir / "cli_engine" / "scripts", ws_scripts)
+            verify_script.write_text(
+                "import importlib, pathlib, subprocess, sys\n"
+                "from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont\n"
+                "import edge_tts, yt_dlp, xml.etree.ElementTree\n"
+                "assert getattr(subprocess.Popen, '_vs_silent_patched', False), 'Missing silent subprocess patch'\n"
+                f"sdir = pathlib.Path(r'{ws_scripts}')\n"
+                "sys.path.insert(0, str(sdir))\n"
+                "required = [\n"
+                "    'fetch_trends_data', 'fetch_viral_intelligence', 'fetch_real_images',\n"
+                "    'convert_image_to_clip', 'generate_contact_sheet', 'generate_animated_subtitles',\n"
+                "    'create_generic_outro', 'run_pipeline_job', 'run_qa_audit',\n"
+                "    'create_viral_thumbnail', 'manage_storage_and_archive', 'content_deduplication',\n"
+                "    'detect_hardware', 'connect_account', 'universal_scheduler',\n"
+                "]\n"
+                "for mod in required:\n"
+                "    importlib.import_module(mod)\n"
+                "print('EMBEDDED_SCRIPTS_OK count=' + str(len(required)))\n",
+                encoding="utf-8",
+            )
+            res_emb = subprocess.run(
+                [str(exe_built), "--run-script", str(verify_script)],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=25,
+            )
+            if res_emb.returncode != 0 or "EMBEDDED_SCRIPTS_OK" not in res_emb.stdout:
+                raise RuntimeError(
+                    f"Smoke test --run-script falló (rc={res_emb.returncode}):\nSTDOUT: {res_emb.stdout}\nSTDERR: {res_emb.stderr}"
+                )
+            print(f"      -> Smoke Test --run-script (15 scripts + PIL.ImageEnhance + Zero-CMD) OK: {res_emb.stdout.strip()}")
+
+            # 3) Real Windowed Uvicorn + Edge WebView2 Live DOM Boot Test!
             res_gui = subprocess.run([str(exe_built), "--smoke-gui"], env=env, capture_output=True, text=True, timeout=30)
             if res_gui.returncode != 0 or not smoke_gui_out.exists():
                 log_f = Path(tmp_smoke) / "appdata" / "logs" / "videostudio.log"
@@ -197,7 +254,7 @@ def build_all(skip_pyinstaller: bool = False) -> dict:
     print("[5/5] Compilando instalador final Offline con Inno Setup 6 (ISCC.exe)...")
     iscc = _find_iscc()
     iss_file = ROOT / "installer" / "videostudio.iss"
-    subprocess.run([str(iscc), f"/DMyAppVersion={version}", str(iss_file)], cwd=str(ROOT / "installer"), check=True)
+    subprocess.run([str(iscc), "/Q", f"/DMyAppVersion={version}", str(iss_file)], cwd=str(ROOT / "installer"), check=True)
 
     out_exe = ROOT / "Output" / f"VideoStudio-Setup-v{version}.exe"
     if not out_exe.exists():

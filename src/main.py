@@ -18,11 +18,49 @@ import os
 from pathlib import Path
 import runpy
 import socket
+import subprocess
 import sys
 import threading
 import time
 import traceback
 import webbrowser
+
+_IS_EMBEDDED_SCRIPT = len(sys.argv) >= 3 and sys.argv[1] == "--run-script"
+
+
+def _install_silent_windows_subprocesses() -> None:
+    """
+    Suppresses 100% of flashing black CMD/conhost windows on Windows whenever VideoStudio Pro
+    or any `--run-script` child worker invokes console tools (ffmpeg, ffprobe, yt-dlp, nvidia-smi,
+    schtasks, Playwright driver node.exe, etc.).
+
+    Win32 `CREATE_NO_WINDOW` (0x08000000) ONLY affects console-subsystem binaries and is ignored
+    by Windows for GUI-subsystem binaries (Explorer, Chromium login window, Inno Setup updater),
+    and must not be combined with `DETACHED_PROCESS` or `CREATE_NEW_CONSOLE`.
+    """
+    if not sys.platform.startswith("win"):
+        return
+    if getattr(subprocess.Popen, "_vs_silent_patched", False):
+        return
+
+    _orig_popen_init = subprocess.Popen.__init__
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    create_new_console = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
+    detached_process = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+
+    def _silent_popen_init(self, *args, **kwargs):
+        flags = int(kwargs.get("creationflags") or 0)
+        if not (flags & (create_new_console | detached_process)):
+            kwargs["creationflags"] = flags | create_no_window
+            if kwargs.get("stdin") is None:
+                kwargs["stdin"] = subprocess.DEVNULL
+        _orig_popen_init(self, *args, **kwargs)
+
+    subprocess.Popen.__init__ = _silent_popen_init  # type: ignore[method-assign]
+    subprocess.Popen._vs_silent_patched = True  # type: ignore[attr-defined]
+
+
+_install_silent_windows_subprocesses()
 
 
 def _ensure_safe_stdio() -> Path:
@@ -77,7 +115,13 @@ def _install_friendly_crash_dialog() -> None:
                 sys.stderr.flush()
         except Exception:
             pass
-        if sys.platform.startswith("win") and "--smoke-gui" not in sys.argv and "--self-test" not in sys.argv:
+        if (
+            sys.platform.startswith("win")
+            and not _IS_EMBEDDED_SCRIPT
+            and "--smoke-gui" not in sys.argv
+            and "--self-test" not in sys.argv
+            and "--smoke-scripts" not in sys.argv
+        ):
             msg = (
                 "Ocurrió un problema inesperado al iniciar VideoStudio Pro.\n\n"
                 f"Detalle técnico registrado en:\n{_APP_LOG_FILE}\n\n"
@@ -88,7 +132,8 @@ def _install_friendly_crash_dialog() -> None:
     sys.excepthook = _hook
 
 
-_install_friendly_crash_dialog()
+if not _IS_EMBEDDED_SCRIPT:
+    _install_friendly_crash_dialog()
 
 
 def _set_windows_app_id() -> None:
@@ -101,16 +146,31 @@ def _set_windows_app_id() -> None:
 
 def _handle_embedded_script_mode() -> None:
     if len(sys.argv) >= 3 and sys.argv[1] == "--run-script":
-        from src.backend.app_paths import configure_bundled_binaries_path
-        configure_bundled_binaries_path()
+        exit_code = 0
+        try:
+            from src.backend.app_paths import configure_bundled_binaries_path
+            configure_bundled_binaries_path()
 
-        script_file = Path(sys.argv[2]).resolve()
-        script_dir = str(script_file.parent)
-        if script_dir not in sys.path:
-            sys.path.insert(0, script_dir)
-        sys.argv = [str(script_file)] + sys.argv[3:]
-        runpy.run_path(str(script_file), run_name="__main__")
-        sys.exit(0)
+            script_file = Path(sys.argv[2]).resolve()
+            script_dir = str(script_file.parent)
+            if script_dir not in sys.path:
+                sys.path.insert(0, script_dir)
+            sys.argv = [str(script_file)] + sys.argv[3:]
+            runpy.run_path(str(script_file), run_name="__main__")
+        except SystemExit as se:
+            exit_code = se.code if isinstance(se.code, int) else (1 if se.code else 0)
+        except BaseException:
+            traceback.print_exc(file=sys.stderr)
+            exit_code = 1
+        finally:
+            try:
+                if sys.stdout:
+                    sys.stdout.flush()
+                if sys.stderr:
+                    sys.stderr.flush()
+            except Exception:
+                pass
+        os._exit(exit_code)
 
 
 _handle_embedded_script_mode()
