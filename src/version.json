@@ -1,7 +1,7 @@
 {
   "app_name": "VideoStudio Pro",
   "edition": "Windows Offline All-in-One",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "build_date": "2026-11-06",
   "github_repo": "sephirods/VideoStudio-Windows-Installer",
   "cli_sibling_repo": "sephirods/VideoStudio-Facelessviral-CLI",

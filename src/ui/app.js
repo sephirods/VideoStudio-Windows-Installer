@@ -1494,36 +1494,44 @@ function normalizeChannel(ch) {
 }
 
 function populateGalleryChannelFilter(vids, cools) {
-  const filterSel = document.getElementById("galleryChannelFilter");
-  if (!filterSel) return;
-  const currentVal = filterSel.value;
-  const counts = {};
-  vids.forEach((v) => {
-    const ch = normalizeChannel(v.channel);
-    counts[ch] = (counts[ch] || 0) + 1;
-  });
+  try {
+    const filterSel = document.getElementById("galleryChannelFilter");
+    if (!filterSel) return;
+    const currentVal = filterSel.value;
+    const counts = {};
+    (vids || []).forEach((v) => {
+      const ch = normalizeChannel(v.channel);
+      counts[ch] = (counts[ch] || 0) + 1;
+    });
 
-  // Also include channels that exist in cooldown or channels config even if 0 videos
-  (cools || []).forEach((c) => {
-    const ch = normalizeChannel(c.channel || c.group);
-    if (counts[ch] === undefined) {
-      counts[ch] = 0;
-    }
-  });
-  (state.bootstrap?.channels || []).forEach((c) => {
-    const ch = normalizeChannel(c.name || c.id);
-    if (counts[ch] === undefined) {
-      counts[ch] = 0;
-    }
-  });
+    // Also include channels that exist in cooldown or channels config even if 0 videos
+    (cools || []).forEach((c) => {
+      const ch = normalizeChannel(c.channel || c.group);
+      if (counts[ch] === undefined) {
+        counts[ch] = 0;
+      }
+    });
 
-  let html = `<option value="">📺 Todos los canales (${vids.length})</option>`;
-  Object.keys(counts).sort().forEach((ch) => {
-    html += `<option value="${esc(ch)}">${esc(ch)} (${counts[ch]})</option>`;
-  });
-  filterSel.innerHTML = html;
-  if (currentVal && counts[currentVal] !== undefined) {
-    filterSel.value = currentVal;
+    const rawChannels = state.bootstrap?.channels?.items || state.bootstrap?.channels;
+    const channelList = Array.isArray(rawChannels) ? rawChannels : Object.values(rawChannels || {});
+    channelList.forEach((c) => {
+      if (!c) return;
+      const ch = normalizeChannel(c.name || c.id);
+      if (counts[ch] === undefined) {
+        counts[ch] = 0;
+      }
+    });
+
+    let html = `<option value="">📺 Todos los canales (${(vids || []).length})</option>`;
+    Object.keys(counts).sort().forEach((ch) => {
+      html += `<option value="${esc(ch)}">${esc(ch)} (${counts[ch]})</option>`;
+    });
+    filterSel.innerHTML = html;
+    if (currentVal && counts[currentVal] !== undefined) {
+      filterSel.value = currentVal;
+    }
+  } catch (err) {
+    console.error("Error populating gallery channel filter:", err);
   }
 }
 

@@ -252,15 +252,39 @@ class PipelineJobManager:
                 f"Brief de tendencia: {json.dumps(trend_brief, ensure_ascii=False)}\n"
                 f"REGLAS ESTRICTAS INNEGOCIABLES:\n"
                 f"1. Longitud EXACTA de `full_script`: entre {min_w} y {max_w} palabras habladas fluidas (ni más corto ni más largo, para clavar 62-72s).\n"
-                f"2. Estructura de 5 compases continuos sin etiquetas ni acotaciones entre corchetes.\n"
-                f"3. CERO DOBLE DESPEDIDA: termina ESTRICTAMENTE con una pregunta abierta/dilema para los comentarios; PROHIBIDO decir 'suscríbete' o 'sígueme'.\n"
-                f"4. Incluye `real_subject_query` (entidad real concreta en inglés para buscar su foto real en Wikimedia) y `video_terms_csv` (6 términos visuales en inglés separados por coma para stock vertical).\n\n"
+                f"2. Estructura de 5 compases continuos con roles dramáticos obligatorios:\n"
+                f"   - Compás 1: HOOK (0-4s, impacto inicial y pregunta clave)\n"
+                f"   - Compás 2: CURIOSITY_GAP (tensión y enigma)\n"
+                f"   - Compás 3: DEEP_DIVE (profundización con datos reales y mecanismo)\n"
+                f"   - Compás 4: CLIMAX_TWIST (giro inesperado o revelación culminante)\n"
+                f"   - Compás 5: ACTIONABLE_DILEMMA (dilema final o pregunta abierta provocativa)\n"
+                f"3. CERO DOBLE DESPEDIDA: termina ESTRICTAMENTE con una pregunta abierta/dilema para los comentarios; PROHIBIDO decir 'suscríbete', 'sígueme' o 'dale like'.\n"
+                f"4. `visual_beats`: un array de EXACTAMENTE 5 objetos correspondientes a los 5 compases en orden, cada uno con:\n"
+                f"   - `beat_index`: entero del 1 al 5\n"
+                f"   - `role`: uno de ['HOOK', 'CURIOSITY_GAP', 'DEEP_DIVE', 'CLIMAX_TWIST', 'ACTIONABLE_DILEMMA']\n"
+                f"   - `narration`: el texto hablado literal de ese compás\n"
+                f"   - `visual_direction`: descripción concreta de lo que debe verse en pantalla (ej. 'macro neural synapse firing', no metáforas)\n"
+                f"   - `stock_search_queries`: lista de 2 a 3 términos de búsqueda específicos en inglés para stock vertical HD adaptados a esa narración exacta\n"
+                f"5. `real_subject_query`: entidad real concreta en inglés para buscar su fotografía real verificada en Wikimedia.\n\n"
                 "Devuelve EXCLUSIVAMENTE este JSON válido:\n"
-                '{"topic": "...", "niche": "...", "language": "' + lang + '", "voice_name": "' + voice + '", '
-                '"real_subject_query": "...", "video_terms_csv": "term1, term2, term3, term4, term5, term6", "full_script": "..."}'
+                "{\n"
+                f'  "topic": "{trend_brief.get("selected_topic", niche)}",\n'
+                f'  "niche": "{niche}",\n'
+                f'  "language": "{lang}",\n'
+                f'  "voice_name": "{voice}",\n'
+                '  "real_subject_query": "...",\n'
+                '  "full_script": "...",\n'
+                '  "visual_beats": [\n'
+                '    {"beat_index": 1, "role": "HOOK", "narration": "...", "visual_direction": "...", "stock_search_queries": ["...", "..."]},\n'
+                '    {"beat_index": 2, "role": "CURIOSITY_GAP", "narration": "...", "visual_direction": "...", "stock_search_queries": ["...", "..."]},\n'
+                '    {"beat_index": 3, "role": "DEEP_DIVE", "narration": "...", "visual_direction": "...", "stock_search_queries": ["...", "..."]},\n'
+                '    {"beat_index": 4, "role": "CLIMAX_TWIST", "narration": "...", "visual_direction": "...", "stock_search_queries": ["...", "..."]},\n'
+                '    {"beat_index": 5, "role": "ACTIONABLE_DILEMMA", "narration": "...", "visual_direction": "...", "stock_search_queries": ["...", "..."]}\n'
+                '  ]\n'
+                "}"
             )
             r2 = await run_stage_agent("viral-scriptwriter", stage_map["viral-scriptwriter"], t2_prompt)
-            if not r2["ok"] or not isinstance(r2["json"], dict) or not r2["json"].get("full_script"):
+            if not r2["ok"] or not isinstance(r2["json"], dict):
                 raise RuntimeError(f"Viral Scriptwriter falló: {r2.get('error') or 'JSON inválido'}")
 
             script_data = r2["json"]
@@ -268,6 +292,26 @@ class PipelineJobManager:
             script_data["voice_name"] = voice
             script_data["niche"] = script_data.get("niche") or niche
             script_data["topic"] = script_data.get("topic") or trend_brief.get("selected_topic", niche)
+
+            # Reconstruct full_script from visual_beats if omitted or misaligned
+            if script_data.get("visual_beats") and isinstance(script_data["visual_beats"], list):
+                if not script_data.get("full_script"):
+                    script_data["full_script"] = " ".join(
+                        str(b.get("narration", "")).strip() for b in script_data["visual_beats"] if b.get("narration")
+                    )
+
+            if not script_data.get("full_script"):
+                raise RuntimeError("Viral Scriptwriter falló: guión vacío")
+
+            # Synthesize video_terms_csv from AI visual beat queries for backwards compatibility
+            all_queries = []
+            for b in script_data.get("visual_beats") or []:
+                for q in b.get("stock_search_queries") or b.get("search_terms") or []:
+                    q_str = str(q).strip()
+                    if q_str and q_str not in all_queries:
+                        all_queries.append(q_str)
+            if all_queries:
+                script_data["video_terms_csv"] = ", ".join(all_queries)
 
             if prod_mode == "copilot":
                 self._set_stage("viral-scriptwriter", status="waiting_user", summary="Esperando tu visto bueno del guión...")
@@ -397,16 +441,24 @@ class PipelineJobManager:
                     else:
                         verified = False
 
-                # Assemble footage strictly in script order (beat 1 -> beat 5)
+                # Assemble footage strictly in script order (beat 1 -> beat 5) without arbitrary slicing
                 beats = beats_res.get("beats") or []
-                if hero_clip.exists() and beats and len(beats[0]["clips"]) > 1:
-                    beats[0]["clips"] = beats[0]["clips"][:-1]  # the real photo already covers the first 4 s
                 broll_ordered = [c for b in beats for c in b["clips"] if Path(c).exists()]
 
                 if not broll_ordered:
-                    self._log("[Visual] Ninguna escena obtuvo clips: usando descarga de respaldo.")
-                    fallback = await _download_stock_broll_standalone(ws, run_dir, script_data.get("video_terms_csv", ""), target_count=16)
-                    broll_ordered = [str(c) for c in fallback]
+                    self._log("[Visual] Reasignando clips y fotos reales para escenas pendientes.")
+                    cand_photos = approved_photos or (sorted([str(p) for p in cand_dir.glob("candidate_*.*")]) if cand_dir.exists() else [])
+                    for idx, photo_p in enumerate(cand_photos[:5]):
+                        clip_p = run_dir / f"real_photo_beat_clip_{idx+1}.mp4"
+                        await _run_cli_script(
+                            scripts_dir / "convert_image_to_clip.py",
+                            "--image-path", str(photo_p),
+                            "--output-clip", str(clip_p),
+                            "--duration", "4.0",
+                            cwd=ws,
+                        )
+                        if clip_p.exists():
+                            broll_ordered.append(str(clip_p))
                 final_clips.extend(broll_ordered)
                 if not final_clips:
                     raise RuntimeError("No se pudieron obtener clips visuales. Verifica tu clave de Pixabay/Pexels en Ajustes.")
@@ -511,16 +563,42 @@ class PipelineJobManager:
             qa_cert_file = run_dir / "qa_certificate.json"
             qa_cert = json.loads(qa_cert_file.read_text(encoding="utf-8")) if qa_cert_file.exists() else {"qa_status": "PASS"}
 
-            # Multimodal Vision check on qa_strip.jpg
+            # Multimodal Vision check on qa_strip.jpg with Cross-Pillar Semantic QA
             if qa_strip.exists():
+                beats_summary = []
+                for b in script_data.get("visual_beats", []):
+                    b_idx = b.get("beat_index", b.get("beat", "?"))
+                    b_role = b.get("role", "")
+                    b_narr = b.get("narration", "")
+                    b_vdir = b.get("visual_direction", "")
+                    beats_summary.append(f"Compás #{b_idx} [{b_role}]: Narración=\"{b_narr}\" | Visual esperado=\"{b_vdir}\"")
+                beats_context = "\n".join(beats_summary) if beats_summary else f"Guión: {script_data.get('full_script', '')[:300]}"
+
                 p6 = (
-                    "Inspecciona esta tira QA de 5 fotogramas del Short renderizado (1080x1920). "
-                    "Verifica que no haya fotogramas totalmente negros ni subtítulos cortados fuera de pantalla. "
-                    'Devuelve JSON: {"visual_pass": true, "notes": "..."}'
+                    "Eres el auditor de control de calidad editorial y visual (video-qa-validator) de un Short viral.\n"
+                    f"Tema del video: '{script_data.get('topic', '')}'.\n"
+                    "Se adjunta `qa_strip.jpg`, una tira panorámica que contiene 5 fotogramas clave del video renderizado "
+                    "(#1 Hook 0-4s, #2 Curiosidad, #3 Clímax/Profundización, #4 Revelación, #5 Dilema final).\n\n"
+                    f"ESTRUCTURA DE LOS 5 COMPASES DEL GUIÓN:\n{beats_context}\n\n"
+                    "EVALUACIÓN REQUERIDA (Cross-Pillar QA):\n"
+                    "1. Integridad técnica (technical_pass): Sin fotogramas totalmente negros ni subtítulos cortados u ocultos.\n"
+                    "2. Alineación semántica (semantic_pass): Comprueba que cada fotograma ilustre temáticamente lo que se narra "
+                    "en su compás correspondiente (por ejemplo: si se habla de neurotoxinas o sinapsis, no deben verse árboles o cascadas irrelevantes).\n\n"
+                    "Devuelve EXCLUSIVAMENTE este JSON válido:\n"
+                    '{"technical_pass": true, "semantic_pass": true, "overall_score": 95, "failures": [], "notes": "..."}'
                 )
-                r6 = await run_stage_agent("video-qa-validator", stage_map["video-qa-validator"], p6, image_paths=[qa_strip])
-                if r6["ok"] and isinstance(r6["json"], dict):
-                    qa_cert["vision_audit"] = r6["json"]
+                v_audit = await _vision_json("video-qa-validator", stage_map["video-qa-validator"], p6, [qa_strip])
+                if v_audit and isinstance(v_audit, dict):
+                    qa_cert["vision_audit"] = v_audit
+                    # Real veto power: semantic_pass: false or technical_pass: false => QA FAIL
+                    if v_audit.get("semantic_pass") is False or v_audit.get("technical_pass") is False:
+                        qa_cert["qa_status"] = "FAIL"
+                        failures = qa_cert.setdefault("failures", [])
+                        for f_item in v_audit.get("failures", []):
+                            if f_item not in failures:
+                                failures.append(f_item)
+                        if not failures:
+                            failures.append(v_audit.get("notes") or "Desalineación semántica en tira visual QA")
                     qa_cert_file.write_text(json.dumps(qa_cert, indent=2, ensure_ascii=False), encoding="utf-8")
 
             dur_s = (qa_cert.get("technical_probe") or {}).get("duration", 65.0)
@@ -535,19 +613,46 @@ class PipelineJobManager:
             )
 
             # =========================================================================
-            # STAGE 7: thumbnail-designer
+            # STAGE 7: thumbnail-designer (AI Vision Focal Inspection + Dynamic Placement)
             # =========================================================================
             t_s7 = time.time()
-            self._set_stage("thumbnail-designer", status="running", summary="Generando miniatura viral con Badge 74px...")
+            self._set_stage("thumbnail-designer", status="running", summary="Inspeccionando composición y generando miniatura...")
             thumb_out = run_dir / "miniatura_viral.jpg"
+            hero_file = run_dir / "hero_image.jpg"
+            target_img_for_thumb = hero_file if hero_file.exists() else (run_dir / "thumbnail_source.jpg")
+            if not target_img_for_thumb.exists() and video_out.exists():
+                await _extract_frame(video_out, target_img_for_thumb)
+
+            placement = "center"
+            if target_img_for_thumb.exists():
+                p7 = (
+                    "Inspecciona la composición de esta imagen de portada (1080x1920 vertical).\n"
+                    "Determina la mejor posición para el titular y badge de forma que NUNCA tape la cara, "
+                    "ojos o el sujeto de interés principal.\n"
+                    "Opciones válidas para text_placement:\n"
+                    "- 'top': si el sujeto principal está en el centro o tercio inferior.\n"
+                    "- 'bottom': si el sujeto principal está en la mitad superior.\n"
+                    "- 'center': si el sujeto principal está en los bordes y el centro está despejado.\n\n"
+                    'Devuelve EXCLUSIVAMENTE este JSON válido:\n'
+                    '{"text_placement": "top", "focal_point": "center", "reason": "..."}'
+                )
+                r7 = await _vision_json("thumbnail-designer", stage_map["thumbnail-designer"], p7, [target_img_for_thumb])
+                if r7 and isinstance(r7, dict) and r7.get("text_placement") in ("top", "center", "bottom"):
+                    placement = r7["text_placement"]
+                    self._log(f"[Thumbnail] IA seleccionó posición '{placement}': {r7.get('reason', '')}")
+
             thumb_args = [
                 "--video-path", str(video_out),
                 "--hook-text", str(viral_meta.get("thumbnail_hook_text", "SECRETO OCULTO")).upper(),
                 "--badge-text", str(viral_meta.get("thumbnail_badge_text", "IMPACTANTE")).upper(),
+                "--text-placement", placement,
                 "--output", str(thumb_out),
             ]
-            if (run_dir / "hero_image.jpg").exists():
-                thumb_args.extend(["--frame-path", str(run_dir / "hero_image.jpg")])
+            if hero_file.exists():
+                thumb_args.extend(["--frame-path", str(hero_file)])
+            elif target_img_for_thumb.exists():
+                thumb_args.extend(["--frame-path", str(target_img_for_thumb)])
+
             await _run_cli_script(scripts_dir / "create_viral_thumbnail.py", *thumb_args, cwd=ws)
             if thumb_out.exists():
                 self._current_job["previews"]["thumbnail"] = str(thumb_out)
@@ -555,7 +660,7 @@ class PipelineJobManager:
                 "thumbnail-designer",
                 status="done",
                 elapsed_sec=round(time.time() - t_s7, 2),
-                summary="Miniatura lista sobre foto real aprobada",
+                summary=f"Miniatura lista ({placement} · foto aprobada)",
             )
 
             # =========================================================================
@@ -662,26 +767,22 @@ def _sanitize_and_bound_script(text: str, ideal_words: int, lang: str = "es") ->
     joined = " ".join(cleaned_sentences).strip()
     words = joined.split()
 
-    # If the model still overshot by >18%, trim cleanly at sentence boundary and keep an open question
-    if len(words) > int(ideal_words * 1.18):
+    # If the text significantly overshoots target word count, bound cleanly at complete sentence boundary
+    if len(words) > int(ideal_words * 1.08):
         kept: list[str] = []
         acc = 0
-        target_body = max(90, ideal_words - 9)
+        target_bound = max(100, ideal_words - 5)
         for s in cleaned_sentences:
             sw = len(s.split())
-            if acc + sw > target_body and kept:
+            if acc + sw > target_bound and kept:
                 break
             kept.append(s)
             acc += sw
         joined = " ".join(kept).strip()
-        if not joined.endswith("?"):
-            q = "¿Y tú qué opinas, estamos realmente preparados?" if lang == "es" else "What do you think, are we truly prepared for this?"
-            joined = f"{joined} {q}"
-    elif not joined.endswith("?"):
-        # Ensure Beat 5 ends with an engaging open question if stripped
-        if any(bad in text.lower() for bad in forbidden):
-            q = "¿Tú qué harías en ese escenario?" if lang == "es" else "What would you do in that scenario?"
-            joined = f"{joined} {q}"
+
+    if not joined.endswith("?"):
+        q = "¿Y tú qué opinas, estamos realmente preparados?" if lang == "es" else "What do you think, are we truly prepared for this?"
+        joined = f"{joined} {q}"
 
     return joined
 
@@ -958,22 +1059,39 @@ async def _hunt_verified_real_photo(
     }
 
 
+ROLES_ORDER = ["HOOK", "CURIOSITY_GAP", "DEEP_DIVE", "CLIMAX_TWIST", "ACTIONABLE_DILEMMA"]
+
+
 def _normalize_visual_beats(script_data: dict) -> list[dict]:
-    """Returns 5 ordered beats {beat, narration, search_terms}; rebuilds them evenly from the script if the model omitted them."""
-    beats_raw = script_data.get("visual_beats")
-    beats: list[dict] = []
-    if isinstance(beats_raw, list):
+    """Returns 5 ordered beats using AI visual_beats directly, without blind modulo repetition."""
+    beats_raw = script_data.get("visual_beats") or script_data.get("beats")
+    if isinstance(beats_raw, list) and len(beats_raw) >= 3:
+        beats: list[dict] = []
         for i, b in enumerate(beats_raw):
             if not isinstance(b, dict):
                 continue
             narration = str(b.get("narration") or "").strip()
-            terms = [str(t).strip() for t in (b.get("search_terms") or []) if str(t).strip()]
-            if narration and terms:
-                beats.append({"beat": len(beats) + 1, "narration": narration, "search_terms": terms[:4]})
-    if len(beats) >= 3:
-        return beats
+            role = str(b.get("role") or (ROLES_ORDER[i] if i < len(ROLES_ORDER) else f"BEAT_{i+1}"))
+            vdir = str(b.get("visual_direction") or "").strip()
+            raw_terms = b.get("stock_search_queries") or b.get("search_terms") or []
+            terms = [str(t).strip() for t in raw_terms if str(t).strip()]
+            if not terms and vdir:
+                terms = [vdir[:60]]
+            if not terms:
+                terms = [f"{role.lower()} cinematic"]
+            beats.append({
+                "beat": int(b.get("beat_index") or b.get("beat") or (i + 1)),
+                "role": role,
+                "narration": narration,
+                "visual_direction": vdir,
+                "search_terms": terms[:3],
+                "stock_search_queries": terms[:3],
+                "clips": list(b.get("clips") or []),
+            })
+        if len(beats) >= 3:
+            return beats
 
-    # Fallback: split the script evenly into 5 balanced sentence groups
+    # Fallback when visual_beats is omitted: split sentences evenly without blind modulo repetition
     sentences = [s.strip() for s in re.split(r"(?<=[.!?¿¡])\s+", script_data.get("full_script", "")) if s.strip()]
     terms_all = [t.strip() for t in str(script_data.get("video_terms_csv", "")).split(",") if t.strip()]
     if not terms_all:
@@ -989,14 +1107,26 @@ def _normalize_visual_beats(script_data: dict) -> list[dict]:
             chunks.append([script_data.get("topic", "")])
 
     beats = []
+    num_terms = len(terms_all)
     for i, chunk in enumerate(chunks):
-        t1 = terms_all[i % len(terms_all)]
-        t2 = terms_all[(i + 1) % len(terms_all)] if len(terms_all) > 1 else t1
-        t_chunk = [t1, t2] if t1 != t2 else [t1]
+        role = ROLES_ORDER[i] if i < len(ROLES_ORDER) else f"BEAT_{i+1}"
+        chunk_text = " ".join(chunk).strip() or script_data.get("topic", "")
+        if i < num_terms:
+            t_chunk = [terms_all[i]]
+            if num_terms > n and (i + n) < num_terms:
+                t_chunk.append(terms_all[i + n])
+        else:
+            base_t = terms_all[min(i, num_terms - 1)]
+            t_chunk = [f"{base_t} {role.lower()}"]
+
         beats.append({
             "beat": i + 1,
-            "narration": " ".join(chunk).strip() or script_data.get("topic", ""),
+            "role": role,
+            "narration": chunk_text,
+            "visual_direction": f"Cinematic {role.lower()} illustrating: {chunk_text[:60]}",
             "search_terms": t_chunk[:3],
+            "stock_search_queries": t_chunk[:3],
+            "clips": [],
         })
     return beats
 
@@ -1158,6 +1288,7 @@ async def _collect_beat_clips(
     used_ids: set[str] = set()
     search_cache: dict = {}
     beat_results: list[dict] = []
+    global_approved: list[tuple[dict, Path]] = []
     sem = asyncio.Semaphore(4)
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0), follow_redirects=True) as client:
@@ -1173,7 +1304,11 @@ async def _collect_beat_clips(
             for rnd in range(1, BEAT_MAX_ROUNDS + 1):
                 terms_now = [t for t in terms if t.lower() not in tried_terms]
                 if not terms_now:
-                    terms_now = [f"{t} cinematic" for t in b["search_terms"] if f"{t} cinematic".lower() not in tried_terms][:2]
+                    vdir = str(b.get("visual_direction") or "").strip()
+                    if vdir and vdir.lower() not in tried_terms:
+                        terms_now = [vdir[:50]]
+                    else:
+                        terms_now = [f"{t} cinematic" for t in b["search_terms"] if f"{t} cinematic".lower() not in tried_terms][:2]
                 if not terms_now:
                     break
                 tried_terms.update(t.lower() for t in terms_now)
@@ -1233,7 +1368,10 @@ async def _collect_beat_clips(
                 rejected_nums = set(n for n in _to_int_list(verdict.get("rejected")) if 1 <= n <= n_dl)
                 ranked = list(dict.fromkeys(n for n in ranked if n not in rejected_nums))
                 for n in ranked:
-                    approved.append(downloaded[n - 1])
+                    item = downloaded[n - 1]
+                    approved.append(item)
+                    if item not in global_approved:
+                        global_approved.append(item)
                 for n in range(1, n_dl + 1):
                     if n not in ranked and n not in rejected_nums:
                         leftovers.append(downloaded[n - 1])
@@ -1262,28 +1400,40 @@ async def _collect_beat_clips(
                 approved.extend(take)
             chosen = approved[:need]
 
-            # Beat fulfillment: if chosen has >= 1 on-topic clip, the beat is satisfied;
-            # intelligent intra-beat reuse will cut it dynamically across duration with alternating zoom/offsets.
-            # Only if the beat has ZERO clips, borrow from leftovers or search remaining topic terms.
+            # If beat still lacks clips, reassign an approved clip from global run pool
+            # or generate a vertical 9:16 clip from real photos with convert_image_to_clip.py.
+            # Never download generic nature/waterfalls.
             if len(chosen) == 0:
                 if leftovers:
                     take = leftovers.pop(0)
                     chosen.append(take)
                     filled_from_leftovers += 1
+                elif global_approved:
+                    avail_global = [c for c in global_approved if c[0]["id"] not in used_ids]
+                    take = avail_global[0] if avail_global else global_approved[(b['beat'] - 1) % len(global_approved)]
+                    chosen.append(take)
+                    filled_from_leftovers += 1
                 else:
-                    all_topic_terms = [t.strip() for t in str(script_data.get("video_terms_csv", "")).split(",") if t.strip()]
-                    rem_terms = [t for t in all_topic_terms if t.lower() not in tried_terms]
-                    if rem_terms:
-                        tried_terms.add(rem_terms[0].lower())
-                        fb_res = await _search_stock_videos(client, rem_terms[0], pix_key, pex_key, search_cache)
-                        fb_fresh = [c for c in fb_res if c["id"] not in seen_ids and c["id"] not in used_ids]
-                        if fb_fresh:
-                            cand = fb_fresh[0]
-                            dest = broll_dir / f"b{b['beat']}_topic_{cand['id']}.mp4"
-                            p = await _download_stock_clip(client, cand, cache_dir, dest)
-                            if p:
-                                chosen.append((cand, p))
-                                filled_from_leftovers += 1
+                    cand_photos = []
+                    if (run_dir / "approved_photos").exists():
+                        cand_photos.extend(sorted(list((run_dir / "approved_photos").glob("photo_*.*"))))
+                    if (run_dir / "real_candidates").exists():
+                        cand_photos.extend(sorted(list((run_dir / "real_candidates").glob("candidate_*.*"))))
+                    if (run_dir / "hero_image.jpg").exists():
+                        cand_photos.insert(0, run_dir / "hero_image.jpg")
+                    if cand_photos:
+                        p_src = cand_photos[(b['beat'] - 1) % len(cand_photos)]
+                        dest = broll_dir / f"b{b['beat']}_real_photo_clip.mp4"
+                        await _run_cli_script(
+                            scripts_dir / "convert_image_to_clip.py",
+                            "--image-path", str(p_src),
+                            "--output-clip", str(dest),
+                            "--duration", "4.0",
+                            cwd=ws,
+                        )
+                        if dest.exists():
+                            chosen.append(({"id": f"real_photo_b{b['beat']}"}, dest))
+                            filled_from_leftovers += 1
 
             for cand, _ in chosen:
                 used_ids.add(cand["id"])
