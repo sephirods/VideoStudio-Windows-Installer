@@ -1177,20 +1177,74 @@ function bindStudioControls() {
   });
 }
 
+function ensureLiveStopwatchTicker() {
+  if (state._liveStopwatchTimer) return;
+  state._liveStopwatchTimer = setInterval(updateLiveStopwatch, 100);
+}
+
+function updateLiveStopwatch() {
+  const st = state._livePipeline;
+  if (!st || !st.active) return;
+  const isRunning = (st.status === "running" || st.status === "awaiting_copilot");
+  const deltaSec = isRunning ? Math.max(0, (performance.now() - (state._livePipelineReceived || performance.now())) / 1000) : 0;
+  const totalElapsed = (st.total_elapsed_sec || 0) + deltaSec;
+
+  const statusLabels = {
+    running: "En progreso",
+    awaiting_copilot: "Esperando tu confirmación",
+    completed: "Completado",
+    error: "Detenido por aviso",
+  };
+
+  const timerEl = document.getElementById("pipelineTotalTimer");
+  if (timerEl) {
+    timerEl.textContent = `Tiempo total: ${totalElapsed.toFixed(1)} s · ${statusLabels[st.status] || st.status}`;
+  }
+
+  if (st.stages && Array.isArray(st.stages)) {
+    for (const s of st.stages) {
+      const stageTimerEl = document.getElementById(`stageTimer_${s.id}`);
+      if (!stageTimerEl) continue;
+      if (s.status === "running") {
+        const sElapsed = (s.elapsed_sec || 0) + deltaSec;
+        stageTimerEl.textContent = `${sElapsed.toFixed(1)} s`;
+      } else if (s.status === "done") {
+        stageTimerEl.textContent = `${s.elapsed_sec || 0} s`;
+      } else if (s.status === "waiting_user") {
+        stageTimerEl.textContent = "Pausado";
+      } else {
+        stageTimerEl.textContent = "—";
+      }
+    }
+  }
+}
+
 function pollPipeline() {
   clearInterval(state.pipelineTimer);
+  ensureLiveStopwatchTicker();
   state.pipelineTimer = setInterval(async () => {
     try {
       const st = await api("/api/pipeline/state");
-      if (!st.active) return;
+      if (!st.active) {
+        clearInterval(state.pipelineTimer);
+        clearInterval(state._liveStopwatchTimer);
+        state._liveStopwatchTimer = null;
+        return;
+      }
+      state._livePipeline = st;
+      state._livePipelineReceived = performance.now();
       renderLivePipeline(st);
+      updateLiveStopwatch();
       if (st.status === "completed" || st.status === "error") {
         clearInterval(state.pipelineTimer);
+        clearInterval(state._liveStopwatchTimer);
+        state._liveStopwatchTimer = null;
+        updateLiveStopwatch();
         refreshGallery();
         refreshBootstrap();
       }
     } catch (_) {}
-  }, 1100);
+  }, 1000);
 }
 
 function updatePreviewImageOnce(wrapId, filePath, versionTag, altText) {
@@ -1212,6 +1266,10 @@ function updatePreviewImageOnce(wrapId, filePath, versionTag, altText) {
 }
 
 function renderLivePipeline(st) {
+  state._livePipeline = st;
+  state._livePipelineReceived = performance.now();
+  ensureLiveStopwatchTicker();
+
   // Reset preview keys when a brand-new run starts
   if (st.run_id && state._lastPreviewRunId !== st.run_id) {
     state._lastPreviewRunId = st.run_id;
@@ -1232,7 +1290,7 @@ function renderLivePipeline(st) {
     error: "Detenido por aviso",
   };
   document.getElementById("pipelineTotalTimer").textContent =
-    `Tiempo total: ${st.total_elapsed_sec || 0} s · ${statusLabels[st.status] || st.status}`;
+    `Tiempo total: ${(st.total_elapsed_sec || 0).toFixed(1)} s · ${statusLabels[st.status] || st.status}`;
 
   const stageStatusMap = {
     pending: "En cola",
@@ -1244,14 +1302,14 @@ function renderLivePipeline(st) {
   };
 
   const grid = document.getElementById("stagesGrid");
-  const stageKey = (st.stages || []).map(s => `${s.name}:${s.status}:${s.elapsed_sec || ""}:${s.summary || ""}:${s.model_key || ""}`).join("|");
+  const stageKey = (st.stages || []).map(s => `${s.id}:${s.name}:${s.status}:${s.summary || ""}:${s.model_key || ""}`).join("|");
   if (grid.dataset.renderedKey !== stageKey) {
     grid.dataset.renderedKey = stageKey;
     grid.innerHTML = (st.stages || []).map((s) => `
-      <div class="stage-card ${esc(s.status)}">
+      <div class="stage-card ${esc(s.status)}" id="stageCard_${esc(s.id)}">
         <div class="stage-top">
           <span class="stage-name">${esc(s.name)}</span>
-          <span class="stage-timer">${s.elapsed_sec ? `${s.elapsed_sec} s` : (s.status === "running" ? "En curso..." : "—")}</span>
+          <span class="stage-timer" id="stageTimer_${esc(s.id)}">${s.elapsed_sec ? `${s.elapsed_sec} s` : (s.status === "running" ? "En curso..." : "—")}</span>
         </div>
         <div class="stage-model" title="${esc(s.model_key)}">${esc(s.model_key ? s.model_key.replace("::", " · ") : s.role)}</div>
         <div class="stage-summary">${esc(s.summary || stageStatusMap[s.status] || s.status)}</div>

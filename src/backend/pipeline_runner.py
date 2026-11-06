@@ -45,7 +45,21 @@ class PipelineJobManager:
     def get_state(self) -> dict[str, Any]:
         if not self._current_job:
             return {"active": False, "status": "idle", "stages": []}
-        return dict(self._current_job)
+        job = dict(self._current_job)
+        now = time.time()
+        job_status = job.get("status")
+        started_at = job.get("started_at")
+        if started_at and job_status in ("running", "awaiting_copilot"):
+            job["total_elapsed_sec"] = round(now - started_at, 2)
+
+        stages = []
+        for s in job.get("stages", []):
+            sc = dict(s)
+            if sc.get("status") == "running" and sc.get("started_at"):
+                sc["elapsed_sec"] = round(now - sc["started_at"], 2)
+            stages.append(sc)
+        job["stages"] = stages
+        return job
 
     def submit_copilot_decision(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not self._current_job or self._current_job.get("status") != "awaiting_copilot":
@@ -144,6 +158,8 @@ class PipelineJobManager:
             return
         for s in self._current_job["stages"]:
             if s["id"] == stage_id:
+                if kwargs.get("status") == "running" and "started_at" not in kwargs and not s.get("started_at"):
+                    kwargs["started_at"] = time.time()
                 s.update(kwargs)
                 break
         self._current_job["total_elapsed_sec"] = round(time.time() - self._current_job["started_at"], 2)

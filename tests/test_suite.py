@@ -354,6 +354,33 @@ class VideoStudioWindowsTestSuite(unittest.TestCase):
         self.assertLessEqual(len(healed.split()), 160)
         self.assertTrue(healed.endswith("?"))
 
+    def test_07_dynamic_live_pipeline_timer(self) -> None:
+        from src.backend.pipeline_runner import PipelineJobManager
+        import time
+
+        mgr = PipelineJobManager()
+        self.assertFalse(mgr.get_state()["active"])
+
+        # Simulate running job with past start timestamp
+        mgr._current_job = {
+            "active": True,
+            "status": "running",
+            "started_at": time.time() - 3.5,
+            "total_elapsed_sec": 0.0,
+            "stages": [
+                {"id": "trend-researcher", "name": "Trend Researcher", "status": "running", "started_at": time.time() - 1.8, "elapsed_sec": 0.0}
+            ]
+        }
+        st = mgr.get_state()
+        self.assertGreaterEqual(st["total_elapsed_sec"], 3.4)
+        self.assertGreaterEqual(st["stages"][0]["elapsed_sec"], 1.7)
+
+        # Complete stage and verify static recorded time
+        mgr._set_stage("trend-researcher", status="done", elapsed_sec=2.45)
+        st_done = mgr.get_state()
+        self.assertEqual(st_done["stages"][0]["status"], "done")
+        self.assertEqual(st_done["stages"][0]["elapsed_sec"], 2.45)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

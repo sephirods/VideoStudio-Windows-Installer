@@ -58,6 +58,7 @@ flowchart TD
 
 ### B. Módulos y Controladores (`app.js`):
 - `renderLivePipeline(st)`: Renderizado con claves de estado en caché (`dataset.renderedKey`) para evitar parpadeos visuales.
+- `ensureLiveStopwatchTicker()` / `updateLiveStopwatch()`: Cronómetro progresivo en vivo a 100ms que avanza décima a décima sin saltos, recalculado dinámicamente en backend (`get_state`) y UI.
 - `renderFilteredGallery()`: Filtrado simultáneo de tarjetas de video y tabla de 30 días según el canal seleccionado.
 - `openImageLightbox(src, title)` / `closeImageLightbox()`: Visor modal en alta resolución con soporte de tecla `Esc`.
 - `unblockTopic(topic)` / `purgeOrphanCooldowns()`: Control interactivo de la protección de 30 días.
