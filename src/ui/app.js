@@ -1344,7 +1344,7 @@ function renderLivePipeline(st) {
     }
   }
 
-  // Box 4: Portada viral (Miniatura con opción de ver en grande)
+  // Box 4: Portada viral (Miniatura con clic para ver en grande)
   const thumbWrap = document.getElementById("prevThumbWrap");
   if (thumbWrap && p.thumbnail) {
     const thumbUrl = `/api/media?path=${encodeURIComponent(p.thumbnail)}&v=${encodeURIComponent(s7Ver)}`;
@@ -1357,16 +1357,15 @@ function renderLivePipeline(st) {
           <img src="${thumbUrl}" alt="Portada viral (Miniatura)" />
           <div class="preview-thumb-badge">🔍 Clic para ver en grande</div>
         </div>
-        <div style="display:flex; justify-content:center; gap:8px; margin-top:6px;">
-          <button class="btn btn-sm" style="padding:3px 10px; font-size:11px;" onclick="openImageLightbox('${esc(thumbUrl)}', 'Portada viral (Alta resolución)')">🔍 Ver en grande</button>
-        </div>
       `;
     }
   }
 
-  // Box 5: Video terminado
+  // Box 5: Video terminado (Se muestra ÚNICAMENTE tras la portada para preservar el orden 1->2->3->4->5)
   const finalWrap = document.getElementById("prevFinalWrap");
-  if (finalWrap && p.final_video) {
+  const stage7Done = (st.stages || []).find((s) => s.name?.includes("Portada") || s.id === "thumbnail-designer")?.status === "done";
+  const canShowVideo = p.final_video && (Boolean(p.thumbnail) || stage7Done || st.status === "completed");
+  if (finalWrap && canShowVideo) {
     const finalKey = `${p.final_video}::${s5Ver}::${p.thumbnail || ""}::${s7Ver}::${p.publication_folder || ""}`;
     if (finalWrap.dataset.renderedKey !== finalKey) {
       finalWrap.dataset.renderedKey = finalKey;
