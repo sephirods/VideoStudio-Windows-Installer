@@ -207,7 +207,7 @@ class PipelineJobManager:
             # STAGE 1: trend-researcher
             # =========================================================================
             t_s1 = time.time()
-            self._set_stage("trend-researcher", status="running", summary="Consultando RSS Trends + Cooldown 30 días...")
+            self._set_stage("trend-researcher", status="running", summary="Buscando temas y tendencias virales...")
             trends_file = run_dir / "market_trends.json"
             await _run_cli_script(scripts_dir / "fetch_trends_data.py", "--output", str(trends_file), cwd=ws)
             blocked_topics = _get_recent_group_topics(ws, ch_id)
@@ -243,7 +243,7 @@ class PipelineJobManager:
             # STAGE 2: viral-scriptwriter (Strict 62-72s word count + zero double goodbye)
             # =========================================================================
             t_s2 = time.time()
-            self._set_stage("viral-scriptwriter", status="running", summary="Redactando guión de 5 compases (62-72s)...")
+            self._set_stage("viral-scriptwriter", status="running", summary="Redactando guión viral optimizado...")
             min_w, max_w = (150, 168) if lang == "es" else (162, 182)
             lang_label = "Español neutro dinámico" if lang == "es" else "Natural high-retention English"
             t2_prompt = (
@@ -335,7 +335,7 @@ class PipelineJobManager:
             # =========================================================================
             async def _branch_seo() -> dict:
                 ts = time.time()
-                self._set_stage("viral-copywriter", status="running", summary="Extrayendo inteligencia YouTube + Copy CTR...")
+                self._set_stage("viral-copywriter", status="running", summary="Analizando SEO y generando títulos ganadores...")
                 intel_path = run_dir / "viral_intelligence.json"
                 await _run_cli_script(
                     scripts_dir / "fetch_viral_intelligence.py",
@@ -373,7 +373,7 @@ class PipelineJobManager:
 
             async def _branch_visuals() -> dict:
                 ts = time.time()
-                self._set_stage("visual-asset-reviewer", status="running", summary="Buscando foto real verificada + escenas por frase...")
+                self._set_stage("visual-asset-reviewer", status="running", summary="Buscando foto real y material visual para cada escena...")
                 subj_query = script_data.get("real_subject_query") or trend_brief.get("real_subject_entity") or script_data["topic"]
                 vision_model = stage_map["visual-asset-reviewer"]
 
@@ -519,7 +519,7 @@ class PipelineJobManager:
             # STAGE 5: video-renderer (Direct FFmpeg + GPU ~20s)
             # =========================================================================
             t_s5 = time.time()
-            self._set_stage("video-renderer", status="running", summary="Renderizando en GPU (Orden secuencial + Subtítulos 58%)...")
+            self._set_stage("video-renderer", status="running", summary="Renderizando video final en GPU...")
             video_out = run_dir / "video_final.mp4"
             render_rc, render_out = await _run_cli_script(
                 scripts_dir / "run_pipeline_job.py",
@@ -547,7 +547,7 @@ class PipelineJobManager:
             # STAGE 6: video-qa-validator (FFprobe 62-72s + Multimodal Vision on qa_strip.jpg)
             # =========================================================================
             t_s6 = time.time()
-            self._set_stage("video-qa-validator", status="running", summary="Auditando 62-72s y tira panorámica QA...")
+            self._set_stage("video-qa-validator", status="running", summary="Verificando calidad y coherencia visual del video...")
             qa_rc, qa_stdout = await _run_cli_script(
                 scripts_dir / "run_qa_audit.py",
                 "--video-path", str(video_out),
@@ -667,7 +667,7 @@ class PipelineJobManager:
             # STAGE 8: packaging-archiver (30d History + 1.5 GB LRU Cap)
             # =========================================================================
             t_s8 = time.time()
-            self._set_stage("packaging-archiver", status="running", summary="Empaquetando publicación y aplicando LRU 1.5 GB...")
+            self._set_stage("packaging-archiver", status="running", summary="Empaquetando publicación y optimizando almacenamiento...")
             slug = re.sub(r"[^a-z0-9]+", "-", script_data["topic"].lower()).strip("-")[:42] or "video-viral"
             _, pkg_stdout = await _run_cli_script(
                 scripts_dir / "manage_storage_and_archive.py",
