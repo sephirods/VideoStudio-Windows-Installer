@@ -1,0 +1,64 @@
+name: Build & Publish Windows Offline Installer (.exe)
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-installer:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Windows Installer Repo
+        uses: actions/checkout@v4
+
+      - name: Checkout Sibling CLI Engine Repo
+        uses: actions/checkout@v4
+        with:
+          repository: sephirods/VideoStudio-Facelessviral-CLI
+          path: cli_sibling
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install FFmpeg Full Build & Inno Setup 6
+        shell: pwsh
+        run: |
+          choco install ffmpeg-full innosetup -y --no-progress
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Sync Version from Git Tag
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_NAME -match "^v(\d+\.\d+\.\d+)") {
+            $ver = $Matches[1]
+            $json = Get-Content src/version.json | ConvertFrom-Json
+            $json.version = $ver
+            $json.github_repo = $env:GITHUB_REPOSITORY
+            $json | ConvertTo-Json -Depth 5 | Set-Content src/version.json -Encoding UTF8
+          }
+
+      - name: Build VideoStudio-Setup.exe & SHA256SUMS.txt
+        env:
+          VIDEOSTUDIO_CLI_SOURCE: ${{ github.workspace }}\cli_sibling
+        run: |
+          python installer/build_installer.py
+
+      - name: Publish GitHub Release (Activates 1-Click Auto-Updater)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Output/VideoStudio-Setup-*.exe
+            Output/SHA256SUMS.txt
+          generate_release_notes: true

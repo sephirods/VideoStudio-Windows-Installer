@@ -18,15 +18,18 @@ Output/
 # Credenciales y sesiones privadas
 config/sessions/
 config/stock_credentials.json
+*.dpapi.json
 *.json.bak
 
-# Archivos pesados y multimedia
+# Archivos pesados y multimedia temporales
 *.mp4
 *.mp3
 *.wav
 *.jpg
 *.jpeg
 *.png
+!assets/*.ico
+!assets/*.bmp
 pipeline_runs/
 storage/
 
